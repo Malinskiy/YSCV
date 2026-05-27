@@ -15,7 +15,7 @@ default = []
 native-camera = ["dep:nokhwa"]
 ## Hardware video decode backends (opt-in, platform-specific)
 videotoolbox = []  # macOS: Apple VideoToolbox HW decode
-vaapi = []         # Linux: VA-API HW decode
+vaapi = ["dep:libc", "dep:libloading"]  # Linux: VA-API HW decode
 nvdec = []         # NVIDIA: NVDEC HW decode (Linux/Windows)
 media-foundation = [] # Windows: Media Foundation HW decode
 hw-decode = []     # Enable auto-dispatch (tries HW, falls back to SW)
@@ -26,6 +26,7 @@ drm = ["dep:libc"] # Linux DRM/KMS atomic modeset output
 arc-swap = "1"
 bytes = "1"
 libc = { version = "0.2", optional = true }
+libloading = { version = "0.8", optional = true }
 nokhwa = { version = "0.10.10", optional = true, default-features = false, features = ["input-native"] }
 rayon = "1.11"
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
