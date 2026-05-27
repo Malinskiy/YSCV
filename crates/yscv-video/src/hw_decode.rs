@@ -959,74 +959,6 @@ pub mod vaapi {
     const VA_ENTRYPOINT_VLD: VAEntrypoint = 1;
     const VA_STATUS_SUCCESS: VAStatus = 0;
 
-    #[link(name = "va")]
-    unsafe extern "C" {
-        fn vaInitialize(dpy: VADisplay, major: *mut i32, minor: *mut i32) -> VAStatus;
-        fn vaTerminate(dpy: VADisplay) -> VAStatus;
-        fn vaCreateConfig(
-            dpy: VADisplay,
-            profile: VAProfile,
-            entrypoint: VAEntrypoint,
-            attrib_list: *const c_void,
-            num_attribs: i32,
-            config_id: *mut VAConfigID,
-        ) -> VAStatus;
-        fn vaCreateSurfaces(
-            dpy: VADisplay,
-            format: u32,
-            width: u32,
-            height: u32,
-            surfaces: *mut VASurfaceID,
-            num_surfaces: u32,
-            attrib_list: *const c_void,
-            num_attribs: u32,
-        ) -> VAStatus;
-        fn vaCreateContext(
-            dpy: VADisplay,
-            config_id: VAConfigID,
-            picture_width: i32,
-            picture_height: i32,
-            flag: i32,
-            render_targets: *mut VASurfaceID,
-            num_render_targets: i32,
-            context: *mut VAContextID,
-        ) -> VAStatus;
-        fn vaBeginPicture(
-            dpy: VADisplay,
-            context: VAContextID,
-            render_target: VASurfaceID,
-        ) -> VAStatus;
-        fn vaCreateBuffer(
-            dpy: VADisplay,
-            context: VAContextID,
-            buf_type: i32,
-            size: u32,
-            num_elements: u32,
-            data: *const c_void,
-            buf_id: *mut VABufferID,
-        ) -> VAStatus;
-        fn vaRenderPicture(
-            dpy: VADisplay,
-            context: VAContextID,
-            buffers: *mut VABufferID,
-            num_buffers: i32,
-        ) -> VAStatus;
-        fn vaEndPicture(dpy: VADisplay, context: VAContextID) -> VAStatus;
-        fn vaSyncSurface(dpy: VADisplay, render_target: VASurfaceID) -> VAStatus;
-        fn vaDeriveImage(dpy: VADisplay, surface: VASurfaceID, image: *mut VAImage) -> VAStatus;
-        fn vaMapBuffer(dpy: VADisplay, buf_id: VABufferID, pbuf: *mut *mut c_void) -> VAStatus;
-        fn vaUnmapBuffer(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
-        fn vaDestroyImage(dpy: VADisplay, image_id: u32) -> VAStatus;
-        fn vaDestroyBuffer(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
-        fn vaDestroySurfaces(
-            dpy: VADisplay,
-            surfaces: *mut VASurfaceID,
-            num_surfaces: i32,
-        ) -> VAStatus;
-        fn vaDestroyConfig(dpy: VADisplay, config_id: VAConfigID) -> VAStatus;
-        fn vaDestroyContext(dpy: VADisplay, context: VAContextID) -> VAStatus;
-    }
-
     /// VA image descriptor returned by vaDeriveImage.
     #[repr(C)]
     struct VAImage {
@@ -1059,9 +991,222 @@ pub mod vaapi {
     const VA_RT_FORMAT_YUV420: u32 = 0x00000001;
     const VASliceDataBufferType: i32 = 5;
 
-    #[link(name = "va-drm")]
-    unsafe extern "C" {
-        fn vaGetDisplayDRM(fd: i32) -> VADisplay;
+    /// Dynamically-loaded libva function pointers.
+    struct VaLib {
+        _lib: libloading::Library,
+        va_initialize:
+            unsafe extern "C" fn(VADisplay, *mut i32, *mut i32) -> VAStatus,
+        va_terminate: unsafe extern "C" fn(VADisplay) -> VAStatus,
+        va_create_config: unsafe extern "C" fn(
+            VADisplay,
+            VAProfile,
+            VAEntrypoint,
+            *const c_void,
+            i32,
+            *mut VAConfigID,
+        ) -> VAStatus,
+        va_create_surfaces: unsafe extern "C" fn(
+            VADisplay,
+            u32,
+            u32,
+            u32,
+            *mut VASurfaceID,
+            u32,
+            *const c_void,
+            u32,
+        ) -> VAStatus,
+        va_create_context: unsafe extern "C" fn(
+            VADisplay,
+            VAConfigID,
+            i32,
+            i32,
+            i32,
+            *mut VASurfaceID,
+            i32,
+            *mut VAContextID,
+        ) -> VAStatus,
+        va_begin_picture:
+            unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus,
+        va_create_buffer: unsafe extern "C" fn(
+            VADisplay,
+            VAContextID,
+            i32,
+            u32,
+            u32,
+            *const c_void,
+            *mut VABufferID,
+        ) -> VAStatus,
+        va_render_picture: unsafe extern "C" fn(
+            VADisplay,
+            VAContextID,
+            *mut VABufferID,
+            i32,
+        ) -> VAStatus,
+        va_end_picture:
+            unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus,
+        va_sync_surface:
+            unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus,
+        va_derive_image:
+            unsafe extern "C" fn(VADisplay, VASurfaceID, *mut VAImage) -> VAStatus,
+        va_map_buffer:
+            unsafe extern "C" fn(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus,
+        va_unmap_buffer:
+            unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus,
+        va_destroy_image:
+            unsafe extern "C" fn(VADisplay, u32) -> VAStatus,
+        va_destroy_buffer:
+            unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus,
+        va_destroy_surfaces:
+            unsafe extern "C" fn(VADisplay, *mut VASurfaceID, i32) -> VAStatus,
+        va_destroy_config:
+            unsafe extern "C" fn(VADisplay, VAConfigID) -> VAStatus,
+        va_destroy_context:
+            unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus,
+    }
+
+    impl VaLib {
+        fn load() -> Option<Self> {
+            // SAFETY: libva.so.2 is a well-known system library.
+            let lib = unsafe { libloading::Library::new("libva.so.2") }.ok()?;
+            // SAFETY: symbol signatures match the libva C ABI.
+            unsafe {
+                let va_initialize = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, *mut i32, *mut i32) -> VAStatus>(
+                        b"vaInitialize\0",
+                    )
+                    .ok()?;
+                let va_terminate = *lib
+                    .get::<unsafe extern "C" fn(VADisplay) -> VAStatus>(b"vaTerminate\0")
+                    .ok()?;
+                let va_create_config = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAProfile, VAEntrypoint, *const c_void, i32, *mut VAConfigID) -> VAStatus>(
+                        b"vaCreateConfig\0",
+                    )
+                    .ok()?;
+                let va_create_surfaces = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, u32, u32, u32, *mut VASurfaceID, u32, *const c_void, u32) -> VAStatus>(
+                        b"vaCreateSurfaces\0",
+                    )
+                    .ok()?;
+                let va_create_context = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAConfigID, i32, i32, i32, *mut VASurfaceID, i32, *mut VAContextID) -> VAStatus>(
+                        b"vaCreateContext\0",
+                    )
+                    .ok()?;
+                let va_begin_picture = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus>(
+                        b"vaBeginPicture\0",
+                    )
+                    .ok()?;
+                let va_create_buffer = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAContextID, i32, u32, u32, *const c_void, *mut VABufferID) -> VAStatus>(
+                        b"vaCreateBuffer\0",
+                    )
+                    .ok()?;
+                let va_render_picture = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAContextID, *mut VABufferID, i32) -> VAStatus>(
+                        b"vaRenderPicture\0",
+                    )
+                    .ok()?;
+                let va_end_picture = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus>(
+                        b"vaEndPicture\0",
+                    )
+                    .ok()?;
+                let va_sync_surface = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus>(
+                        b"vaSyncSurface\0",
+                    )
+                    .ok()?;
+                let va_derive_image = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VASurfaceID, *mut VAImage) -> VAStatus>(
+                        b"vaDeriveImage\0",
+                    )
+                    .ok()?;
+                let va_map_buffer = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus>(
+                        b"vaMapBuffer\0",
+                    )
+                    .ok()?;
+                let va_unmap_buffer = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus>(
+                        b"vaUnmapBuffer\0",
+                    )
+                    .ok()?;
+                let va_destroy_image = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, u32) -> VAStatus>(
+                        b"vaDestroyImage\0",
+                    )
+                    .ok()?;
+                let va_destroy_buffer = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus>(
+                        b"vaDestroyBuffer\0",
+                    )
+                    .ok()?;
+                let va_destroy_surfaces = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, *mut VASurfaceID, i32) -> VAStatus>(
+                        b"vaDestroySurfaces\0",
+                    )
+                    .ok()?;
+                let va_destroy_config = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAConfigID) -> VAStatus>(
+                        b"vaDestroyConfig\0",
+                    )
+                    .ok()?;
+                let va_destroy_context = *lib
+                    .get::<unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus>(
+                        b"vaDestroyContext\0",
+                    )
+                    .ok()?;
+                Some(Self {
+                    _lib: lib,
+                    va_initialize,
+                    va_terminate,
+                    va_create_config,
+                    va_create_surfaces,
+                    va_create_context,
+                    va_begin_picture,
+                    va_create_buffer,
+                    va_render_picture,
+                    va_end_picture,
+                    va_sync_surface,
+                    va_derive_image,
+                    va_map_buffer,
+                    va_unmap_buffer,
+                    va_destroy_image,
+                    va_destroy_buffer,
+                    va_destroy_surfaces,
+                    va_destroy_config,
+                    va_destroy_context,
+                })
+            }
+        }
+    }
+
+    /// Dynamically-loaded libva-drm function pointer.
+    struct VaDrmLib {
+        _lib: libloading::Library,
+        va_get_display_drm: unsafe extern "C" fn(i32) -> VADisplay,
+    }
+
+    impl VaDrmLib {
+        fn load() -> Option<Self> {
+            // SAFETY: libva-drm.so.2 is a well-known system library.
+            let lib =
+                unsafe { libloading::Library::new("libva-drm.so.2") }.ok()?;
+            // SAFETY: symbol signature matches the libva-drm C ABI.
+            unsafe {
+                let va_get_display_drm = *lib
+                    .get::<unsafe extern "C" fn(i32) -> VADisplay>(
+                        b"vaGetDisplayDRM\0",
+                    )
+                    .ok()?;
+                Some(Self {
+                    _lib: lib,
+                    va_get_display_drm,
+                })
+            }
+        }
     }
 
     /// VA-API hardware decoder for H.264/HEVC on Linux.
@@ -1076,70 +1221,55 @@ pub mod vaapi {
         initialized: bool,
         surfaces_created: bool,
         sw_fallback: Option<Box<dyn VideoDecoder>>,
+        va: Option<VaLib>,
+        #[allow(dead_code)]
+        va_drm: Option<VaDrmLib>,
     }
 
     impl VaapiDecoder {
         pub fn new(codec: VideoCodec) -> Result<Self, VideoError> {
-            // Try to open DRM render node
+            let Some(va) = VaLib::load() else {
+                return Self::with_sw_fallback(codec);
+            };
+            let Some(va_drm) = VaDrmLib::load() else {
+                return Self::with_sw_fallback(codec);
+            };
+
             // SAFETY: (category 1) path is a null-terminated static byte string.
-            let fd = unsafe { libc_open(b"/dev/dri/renderD128\0".as_ptr() as *const _, 2) };
+            let fd = unsafe {
+                libc::open(
+                    b"/dev/dri/renderD128\0".as_ptr() as *const libc::c_char,
+                    libc::O_RDWR,
+                )
+            };
             if fd < 0 {
-                // No DRM device — fall back to software
-                let sw: Box<dyn VideoDecoder> = match codec {
-                    VideoCodec::H264 => Box::new(super::super::h264_decoder::H264Decoder::new()),
-                    VideoCodec::H265 => Box::new(super::super::hevc_decoder::HevcDecoder::new()),
-                    _ => return Err(VideoError::Codec("Unsupported codec".into())),
-                };
-                return Ok(VaapiDecoder {
-                    codec,
-                    display: ptr::null_mut(),
-                    config: 0,
-                    context: 0,
-                    surfaces: Vec::new(),
-                    width: 0,
-                    height: 0,
-                    initialized: false,
-                    surfaces_created: false,
-                    sw_fallback: Some(sw),
-                });
+                return Self::with_sw_fallback(codec);
             }
 
             // SAFETY: (category 1) fd is valid (checked >= 0 above); vaInitialize status
             // is checked and display is terminated on failure.
             unsafe {
-                let display = vaGetDisplayDRM(fd);
+                let display = (va_drm.va_get_display_drm)(fd);
                 let mut major = 0i32;
                 let mut minor = 0i32;
-                let status = vaInitialize(display, &mut major, &mut minor);
+                let status =
+                    (va.va_initialize)(display, &mut major, &mut minor);
                 if status != VA_STATUS_SUCCESS {
-                    let sw: Box<dyn VideoDecoder> = match codec {
-                        VideoCodec::H264 => {
-                            Box::new(super::super::h264_decoder::H264Decoder::new())
-                        }
-                        _ => Box::new(super::super::hevc_decoder::HevcDecoder::new()),
-                    };
-                    return Ok(VaapiDecoder {
-                        codec,
-                        display: ptr::null_mut(),
-                        config: 0,
-                        context: 0,
-                        surfaces: Vec::new(),
-                        width: 0,
-                        height: 0,
-                        initialized: false,
-                        surfaces_created: false,
-                        sw_fallback: Some(sw),
-                    });
+                    return Self::with_sw_fallback(codec);
                 }
 
                 let profile = match codec {
                     VideoCodec::H264 => VA_PROFILE_H264_HIGH,
                     VideoCodec::H265 => VA_PROFILE_HEVC_MAIN,
-                    _ => return Err(VideoError::Codec("Unsupported codec".into())),
+                    _ => {
+                        return Err(VideoError::Codec(
+                            "Unsupported codec".into(),
+                        ))
+                    }
                 };
 
                 let mut config_id: VAConfigID = 0;
-                let status = vaCreateConfig(
+                let status = (va.va_create_config)(
                     display,
                     profile,
                     VA_ENTRYPOINT_VLD,
@@ -1148,25 +1278,8 @@ pub mod vaapi {
                     &mut config_id,
                 );
                 if status != VA_STATUS_SUCCESS {
-                    vaTerminate(display);
-                    let sw: Box<dyn VideoDecoder> = match codec {
-                        VideoCodec::H264 => {
-                            Box::new(super::super::h264_decoder::H264Decoder::new())
-                        }
-                        _ => Box::new(super::super::hevc_decoder::HevcDecoder::new()),
-                    };
-                    return Ok(VaapiDecoder {
-                        codec,
-                        display: ptr::null_mut(),
-                        config: 0,
-                        context: 0,
-                        surfaces: Vec::new(),
-                        width: 0,
-                        height: 0,
-                        initialized: false,
-                        surfaces_created: false,
-                        sw_fallback: Some(sw),
-                    });
+                    (va.va_terminate)(display);
+                    return Self::with_sw_fallback(codec);
                 }
 
                 Ok(VaapiDecoder {
@@ -1180,17 +1293,54 @@ pub mod vaapi {
                     initialized: true,
                     surfaces_created: false,
                     sw_fallback: None,
+                    va: Some(va),
+                    va_drm: Some(va_drm),
                 })
             }
         }
 
+        fn with_sw_fallback(codec: VideoCodec) -> Result<Self, VideoError> {
+            let sw: Box<dyn VideoDecoder> = match codec {
+                VideoCodec::H264 => {
+                    Box::new(super::super::h264_decoder::H264Decoder::new())
+                }
+                VideoCodec::H265 => {
+                    Box::new(super::super::hevc_decoder::HevcDecoder::new())
+                }
+                _ => {
+                    return Err(VideoError::Codec(
+                        "Unsupported codec".into(),
+                    ))
+                }
+            };
+            Ok(VaapiDecoder {
+                codec,
+                display: ptr::null_mut(),
+                config: 0,
+                context: 0,
+                surfaces: Vec::new(),
+                width: 0,
+                height: 0,
+                initialized: false,
+                surfaces_created: false,
+                sw_fallback: Some(sw),
+                va: None,
+                va_drm: None,
+            })
+        }
+
         /// Create surfaces and context for the given resolution.
-        unsafe fn create_surfaces(&mut self, width: u32, height: u32) -> Result<(), VideoError> {
+        unsafe fn create_surfaces(
+            &mut self,
+            width: u32,
+            height: u32,
+        ) -> Result<(), VideoError> {
+            let va = self.va.as_ref().unwrap();
             self.width = width;
             self.height = height;
             let num_surfaces: u32 = 4;
             self.surfaces = vec![0u32; num_surfaces as usize];
-            let status = vaCreateSurfaces(
+            let status = (va.va_create_surfaces)(
                 self.display,
                 VA_RT_FORMAT_YUV420,
                 width,
@@ -1206,7 +1356,7 @@ pub mod vaapi {
                 )));
             }
             let mut ctx: VAContextID = 0;
-            let status = vaCreateContext(
+            let status = (va.va_create_context)(
                 self.display,
                 self.config,
                 width as i32,
@@ -1232,19 +1382,19 @@ pub mod vaapi {
             slice_data: &[u8],
             surface_idx: usize,
         ) -> Result<Option<DecodedFrame>, VideoError> {
+            let va = self.va.as_ref().unwrap();
             let surface = self.surfaces[surface_idx % self.surfaces.len()];
 
-            // Begin picture
-            let status = vaBeginPicture(self.display, self.context, surface);
+            let status =
+                (va.va_begin_picture)(self.display, self.context, surface);
             if status != VA_STATUS_SUCCESS {
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaBeginPicture failed: {status}"
                 )));
             }
 
-            // Create and render slice data buffer
             let mut slice_buf: VABufferID = 0;
-            let status = vaCreateBuffer(
+            let status = (va.va_create_buffer)(
                 self.display,
                 self.context,
                 VASliceDataBufferType,
@@ -1254,54 +1404,59 @@ pub mod vaapi {
                 &mut slice_buf,
             );
             if status != VA_STATUS_SUCCESS {
-                vaEndPicture(self.display, self.context);
+                (va.va_end_picture)(self.display, self.context);
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaCreateBuffer(SliceData) failed: {status}"
                 )));
             }
 
-            let status = vaRenderPicture(self.display, self.context, &mut slice_buf, 1);
+            let status = (va.va_render_picture)(
+                self.display,
+                self.context,
+                &mut slice_buf,
+                1,
+            );
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
-                vaEndPicture(self.display, self.context);
+                (va.va_destroy_buffer)(self.display, slice_buf);
+                (va.va_end_picture)(self.display, self.context);
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaRenderPicture failed: {status}"
                 )));
             }
 
-            // End picture
-            let status = vaEndPicture(self.display, self.context);
+            let status =
+                (va.va_end_picture)(self.display, self.context);
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
+                (va.va_destroy_buffer)(self.display, slice_buf);
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaEndPicture failed: {status}"
                 )));
             }
 
-            // Sync
-            let status = vaSyncSurface(self.display, surface);
+            let status = (va.va_sync_surface)(self.display, surface);
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
+                (va.va_destroy_buffer)(self.display, slice_buf);
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaSyncSurface failed: {status}"
                 )));
             }
 
-            // Derive image and readback NV12
             let mut image: VAImage = std::mem::zeroed();
-            let status = vaDeriveImage(self.display, surface, &mut image);
+            let status =
+                (va.va_derive_image)(self.display, surface, &mut image);
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
+                (va.va_destroy_buffer)(self.display, slice_buf);
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaDeriveImage failed: {status}"
                 )));
             }
 
             let mut buf_ptr: *mut c_void = ptr::null_mut();
-            let status = vaMapBuffer(self.display, image.buf, &mut buf_ptr);
+            let status =
+                (va.va_map_buffer)(self.display, image.buf, &mut buf_ptr);
             if status != VA_STATUS_SUCCESS {
-                vaDestroyImage(self.display, image.image_id);
-                vaDestroyBuffer(self.display, slice_buf);
+                (va.va_destroy_image)(self.display, image.image_id);
+                (va.va_destroy_buffer)(self.display, slice_buf);
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaMapBuffer failed: {status}"
                 )));
@@ -1324,9 +1479,9 @@ pub mod vaapi {
                 &mut rgb,
             );
 
-            vaUnmapBuffer(self.display, image.buf);
-            vaDestroyImage(self.display, image.image_id);
-            vaDestroyBuffer(self.display, slice_buf);
+            (va.va_unmap_buffer)(self.display, image.buf);
+            (va.va_destroy_image)(self.display, image.image_id);
+            (va.va_destroy_buffer)(self.display, slice_buf);
 
             Ok(Some(DecodedFrame {
                 width: w,
@@ -1338,11 +1493,6 @@ pub mod vaapi {
                 rgb16_data: None,
             }))
         }
-    }
-
-    unsafe extern "C" {
-        #[link_name = "open"]
-        fn libc_open(path: *const u8, flags: i32) -> i32;
     }
 
     impl VideoDecoder for VaapiDecoder {
@@ -1418,15 +1568,19 @@ pub mod vaapi {
     impl Drop for VaapiDecoder {
         fn drop(&mut self) {
             if self.initialized && !self.display.is_null() {
+                let va = self.va.as_ref().unwrap();
                 // SAFETY: (category 1) display/config/context/surfaces are valid
                 // (self.initialized + null checks guard); VA-API teardown order is respected.
                 unsafe {
                     if self.surfaces_created {
                         if self.context != 0 {
-                            vaDestroyContext(self.display, self.context);
+                            (va.va_destroy_context)(
+                                self.display,
+                                self.context,
+                            );
                         }
                         if !self.surfaces.is_empty() {
-                            vaDestroySurfaces(
+                            (va.va_destroy_surfaces)(
                                 self.display,
                                 self.surfaces.as_mut_ptr(),
                                 self.surfaces.len() as i32,
@@ -1434,9 +1588,9 @@ pub mod vaapi {
                         }
                     }
                     if self.config != 0 {
-                        vaDestroyConfig(self.display, self.config);
+                        (va.va_destroy_config)(self.display, self.config);
                     }
-                    vaTerminate(self.display);
+                    (va.va_terminate)(self.display);
                 }
             }
         }

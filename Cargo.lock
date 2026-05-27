@@ -2980,6 +2980,7 @@ dependencies = [
  "bytes",
  "criterion",
  "libc",
+ "libloading",
  "nokhwa",
  "proptest",
  "rayon",
