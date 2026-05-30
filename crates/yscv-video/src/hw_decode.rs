@@ -2577,9 +2577,11 @@ pub mod media_foundation {
                 &mut count,
             );
             if hr != S_OK || count == 0 || activate_array.is_null() {
+                eprintln!("[MF] MFTEnumEx failed: hr={hr:#X} count={count}");
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
+            eprintln!("[MF] MFTEnumEx found {count} decoder(s)");
 
             // 3. ActivateObject on first entry → IMFTransform*
             let first_activate = *activate_array;
@@ -2593,9 +2595,11 @@ pub mod media_foundation {
             CoTaskMemFree(activate_array as *mut c_void);
 
             if hr != S_OK || transform.is_null() {
+                eprintln!("[MF] ActivateObject failed: hr={hr:#X}");
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
+            eprintln!("[MF] ActivateObject OK, transform={transform:?}");
 
             // 5. Create + configure input media type
             let mut input_type: *mut c_void = ptr::null_mut();
@@ -2614,10 +2618,12 @@ pub mod media_foundation {
             let hr = transform_set_input_type(transform, 0, input_type, 0);
             com_release(input_type);
             if hr != S_OK {
+                eprintln!("[MF] SetInputType failed: hr={hr:#X}");
                 com_release(transform);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
+            eprintln!("[MF] SetInputType OK");
 
             // 7. Enumerate output types, find NV12
             let mut nv12_type: *mut c_void = ptr::null_mut();
@@ -2638,12 +2644,14 @@ pub mod media_foundation {
                 com_release(candidate);
             }
             if nv12_type.is_null() {
+                eprintln!("[MF] No NV12 output type available");
                 com_release(transform);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
 
             let hr = transform_set_output_type(transform, 0, nv12_type, 0);
+            eprintln!("[MF] SetOutputType(NV12): hr={hr:#X}");
 
             // Read frame size from negotiated output type (high32 = width, low32 = height)
             let mut width: u32 = 0;
@@ -2680,6 +2688,10 @@ pub mod media_foundation {
             // 9. Notify begin/start of stream
             transform_process_message(transform, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
             transform_process_message(transform, MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+
+            eprintln!(
+                "[MF] Decoder ready: {codec:?} {width}x{height} provides_samples={provides_samples} buf_size={output_buf_size}"
+            );
 
             Ok(MediaFoundationDecoder {
                 codec,
@@ -2761,6 +2773,7 @@ pub mod media_foundation {
             let hr = transform_process_input(self.transform, 0, sample, 0);
             com_release(sample);
             if hr != S_OK {
+                eprintln!("[MF] ProcessInput failed: hr={hr:#X} data_len={}", data.len());
                 return Err(VideoError::Codec(format!(
                     "MF: ProcessInput failed: {hr:#X}"
                 )));
@@ -2830,6 +2843,7 @@ pub mod media_foundation {
                 return Ok(None);
             }
             if hr != S_OK {
+                eprintln!("[MF] ProcessOutput failed: hr={hr:#X} status={proc_status:#X}");
                 if !pre_alloc.is_null() {
                     com_release(pre_alloc);
                 }
@@ -2907,18 +2921,25 @@ pub mod media_foundation {
 
             let w = self.width as usize;
             let h = self.height as usize;
+            eprintln!(
+                "[MF] Frame: {w}x{h} nv12_len={nv12_len} expected_nv12={} provides_samples={}",
+                w * h * 3 / 2,
+                self.provides_samples
+            );
 
             let mut rgb = vec![0u8; w * h * 3];
 
             let mut buf2d: *mut c_void = ptr::null_mut();
-            let use_2d = com_query_interface(contig_buf, &IID_IMF2DBuffer, &mut buf2d) == S_OK
-                && !buf2d.is_null();
+            let qi_hr = com_query_interface(contig_buf, &IID_IMF2DBuffer, &mut buf2d);
+            let use_2d = qi_hr == S_OK && !buf2d.is_null();
+            eprintln!("[MF] IMF2DBuffer QI: hr={qi_hr:#X} use_2d={use_2d}");
 
             if use_2d {
                 let mut scanline0: *mut u8 = ptr::null_mut();
                 let mut pitch: i32 = 0;
                 if buffer_2d_lock(buf2d, &mut scanline0, &mut pitch) == S_OK {
                     let stride = pitch.unsigned_abs() as usize;
+                    eprintln!("[MF] Lock2D: pitch={pitch} stride={stride} scanline0={scanline0:?}");
                     super::nv12_to_rgb8(
                         scanline0,
                         stride,
