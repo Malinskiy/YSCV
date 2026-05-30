@@ -2419,6 +2419,50 @@ pub mod media_foundation {
         method(attrs, key, value)
     }
 
+    // IID for IMF2DBuffer {7DC9D5F9-9ED9-44ec-9BBF-0600BB589FBB}
+    const IID_IMF2DBuffer: GUID = [
+        0xf9, 0xd5, 0xc9, 0x7d, 0x9d, 0x9e, 0xec, 0x44, 0x9b, 0xbf, 0x06, 0x00, 0xbb, 0x58,
+        0x9f, 0xbb,
+    ];
+
+    /// IUnknown::QueryInterface (vtable 0)
+    unsafe fn com_query_interface(
+        obj: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(obj as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *const GUID,
+            *mut *mut c_void,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(0));
+        method(obj, iid, out)
+    }
+
+    /// IMF2DBuffer::Lock2D (vtable 3) — returns scanline pointer and pitch
+    unsafe fn buffer_2d_lock(
+        buf2d: *mut c_void,
+        scanline0: *mut *mut u8,
+        pitch: *mut i32,
+    ) -> HRESULT {
+        let vtable = *(buf2d as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *mut *mut u8,
+            *mut i32,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(3));
+        method(buf2d, scanline0, pitch)
+    }
+
+    /// IMF2DBuffer::Unlock2D (vtable 4)
+    unsafe fn buffer_2d_unlock(buf2d: *mut c_void) -> HRESULT {
+        let vtable = *(buf2d as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(4));
+        method(buf2d)
+    }
+
     /// IMFMediaBuffer::Lock (vtable 3)
     unsafe fn media_buffer_lock(
         buf: *mut c_void,
@@ -2864,17 +2908,40 @@ pub mod media_foundation {
             let w = self.width as usize;
             let h = self.height as usize;
 
-            // NV12 → RGB8 via shared helper
             let mut rgb = vec![0u8; w * h * 3];
-            super::nv12_to_rgb8(
-                nv12_ptr,
-                w,
-                nv12_ptr.add(w * h),
-                w,
-                w,
-                h,
-                &mut rgb,
-            );
+
+            let mut buf2d: *mut c_void = ptr::null_mut();
+            let use_2d = com_query_interface(contig_buf, &IID_IMF2DBuffer, &mut buf2d) == S_OK
+                && !buf2d.is_null();
+
+            if use_2d {
+                let mut scanline0: *mut u8 = ptr::null_mut();
+                let mut pitch: i32 = 0;
+                if buffer_2d_lock(buf2d, &mut scanline0, &mut pitch) == S_OK {
+                    let stride = pitch.unsigned_abs() as usize;
+                    super::nv12_to_rgb8(
+                        scanline0,
+                        stride,
+                        scanline0.add(stride * h),
+                        stride,
+                        w,
+                        h,
+                        &mut rgb,
+                    );
+                    buffer_2d_unlock(buf2d);
+                }
+                com_release(buf2d);
+            } else {
+                super::nv12_to_rgb8(
+                    nv12_ptr,
+                    w,
+                    nv12_ptr.add(w * h),
+                    w,
+                    w,
+                    h,
+                    &mut rgb,
+                );
+            }
 
             media_buffer_unlock(contig_buf);
             com_release(contig_buf);
