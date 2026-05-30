@@ -2570,7 +2570,7 @@ pub mod media_foundation {
             let mut count: u32 = 0;
             let hr = MFTEnumEx(
                 &MFT_CATEGORY_VIDEO_DECODER,
-                0x00000070, // MFT_ENUM_FLAG_SYNCMFT | ASYNCMFT | HARDWARE | SORTANDFILTER
+                0x00000047, // MFT_ENUM_FLAG_SYNCMFT | ASYNCMFT | HARDWARE | SORTANDFILTER
                 &input_info,
                 ptr::null(),
                 &mut activate_array,
