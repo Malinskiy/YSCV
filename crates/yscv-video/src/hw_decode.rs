@@ -2082,42 +2082,25 @@ pub mod media_foundation {
     type GUID = [u8; 16];
 
     const S_OK: HRESULT = 0;
+    const MF_E_TRANSFORM_NEED_MORE_INPUT: HRESULT = 0xC00D6D72_u32 as i32;
+    #[allow(dead_code)]
+    const MF_E_INVALIDMEDIATYPE: HRESULT = 0xC00D36B4_u32 as i32;
+    #[allow(dead_code)]
+    const E_NOTIMPL: HRESULT = 0x80004001_u32 as i32;
 
-    // MFT GUIDs for H.264/HEVC decoder
+    // MFT category GUID for video decoders {d0033739-4f81-4293-868e-2f732875c515}
     const MFT_CATEGORY_VIDEO_DECODER: GUID = [
         0x39, 0x37, 0x03, 0xd0, 0x81, 0x4f, 0x93, 0x42, 0x86, 0x8e, 0x2f, 0x73, 0x28, 0x75, 0xc5,
         0x15,
     ];
 
-    #[link(name = "mfplat")]
-    unsafe extern "system" {
-        fn MFStartup(version: u32, flags: u32) -> HRESULT;
-        fn MFShutdown() -> HRESULT;
-    }
+    // IID_IMFTransform {bf94c121-5b05-4e6f-8000-ba598961414d}
+    const IID_IMF_TRANSFORM: GUID = [
+        0x21, 0xc1, 0x94, 0xbf, 0x05, 0x5b, 0x6f, 0x4e, 0x80, 0x00, 0xba, 0x59, 0x89, 0x61, 0x41,
+        0x4d,
+    ];
 
-    // Additional MF functions for full pipeline
-    #[link(name = "mf")]
-    unsafe extern "system" {
-        fn MFTEnumEx(
-            guid_category: *const GUID,
-            flags: u32,
-            input_type: *const MFT_REGISTER_TYPE_INFO,
-            output_type: *const MFT_REGISTER_TYPE_INFO,
-            activate: *mut *mut *mut c_void, // IMFActivate***
-            count: *mut u32,
-        ) -> HRESULT;
-
-        fn MFCreateSample(sample: *mut *mut c_void) -> HRESULT; // IMFSample**
-        fn MFCreateMemoryBuffer(max_len: u32, buffer: *mut *mut c_void) -> HRESULT;
-    }
-
-    #[repr(C)]
-    struct MFT_REGISTER_TYPE_INFO {
-        guid_major_type: GUID,
-        guid_subtype: GUID,
-    }
-
-    // Well-known GUIDs
+    // Well-known media type GUIDs
     const MFMediaType_Video: GUID = [
         0x73, 0x64, 0x69, 0x76, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b,
         0x71,
@@ -2135,39 +2118,113 @@ pub mod media_foundation {
         0x71,
     ];
 
-    // ── COM vtable offsets for IMFTransform ────────────────────────
-    // IUnknown: 0=QueryInterface, 1=AddRef, 2=Release
-    // IMFTransform: 3..=21
-    const IMF_TRANSFORM_PROCESS_INPUT: usize = 18;
-    const IMF_TRANSFORM_PROCESS_OUTPUT: usize = 19;
-    const IMF_TRANSFORM_PROCESS_MESSAGE: usize = 17;
+    // MF_MT attribute GUIDs
+    // {48eba18e-f8c9-4687-bf11-0a74c9f96a8f}
+    const MF_MT_MAJOR_TYPE: GUID = [
+        0x8e, 0xa1, 0xeb, 0x48, 0xc9, 0xf8, 0x87, 0x46, 0xbf, 0x11, 0x0a, 0x74, 0xc9, 0xf9, 0x6a,
+        0x8f,
+    ];
+    // {f7e34c9a-42e8-4714-b74b-cb29d72c35e5}
+    const MF_MT_SUBTYPE: GUID = [
+        0x9a, 0x4c, 0xe3, 0xf7, 0xe8, 0x42, 0x14, 0x47, 0xb7, 0x4b, 0xcb, 0x29, 0xd7, 0x2c, 0x35,
+        0xe5,
+    ];
+    // {e2724bb8-e676-4806-b4b2-a8d6efb44ccd}
+    const MF_MT_INTERLACE_MODE: GUID = [
+        0xb8, 0x4b, 0x72, 0xe2, 0x76, 0xe6, 0x06, 0x48, 0xb4, 0xb2, 0xa8, 0xd6, 0xef, 0xb4, 0x4c,
+        0xcd,
+    ];
+    // {1652c33d-d6b2-4012-b834-72030849a37d}
+    const MF_MT_FRAME_SIZE: GUID = [
+        0x3d, 0xc3, 0x52, 0x16, 0xb2, 0xd6, 0x12, 0x40, 0xb8, 0x34, 0x72, 0x03, 0x08, 0x49, 0xa3,
+        0x7d,
+    ];
 
-    // IMFSample vtable: AddBuffer is at index 14
-    const IMF_SAMPLE_ADD_BUFFER: usize = 14;
-
-    // IMFMediaBuffer vtable: Lock=3, Unlock=4, GetCurrentLength=5
-    const IMF_MEDIA_BUFFER_LOCK: usize = 3;
-    const IMF_MEDIA_BUFFER_UNLOCK: usize = 4;
-    const IMF_MEDIA_BUFFER_SET_CURRENT_LENGTH: usize = 6;
-
-    // MFT_MESSAGE_NOTIFY_BEGIN_STREAMING
+    // MFT_MESSAGE constants
+    const MFT_MESSAGE_COMMAND_FLUSH: u32 = 0x0;
+    const MFT_MESSAGE_COMMAND_DRAIN: u32 = 0x1;
     const MFT_MESSAGE_NOTIFY_BEGIN_STREAMING: u32 = 0x10000000;
+    const MFT_MESSAGE_NOTIFY_START_OF_STREAM: u32 = 0x10000003;
+
+    const MFT_OUTPUT_STREAM_PROVIDES_SAMPLES: u32 = 0x1;
+
+    // ── Extern function bindings ──────────────────────────────────────
+
+    #[link(name = "mfplat")]
+    unsafe extern "system" {
+        fn MFStartup(version: u32, flags: u32) -> HRESULT;
+        fn MFShutdown() -> HRESULT;
+        fn MFCreateMediaType(media_type: *mut *mut c_void) -> HRESULT;
+    }
+
+    #[link(name = "mf")]
+    unsafe extern "system" {
+        fn MFTEnumEx(
+            guid_category: *const GUID,
+            flags: u32,
+            input_type: *const MFT_REGISTER_TYPE_INFO,
+            output_type: *const MFT_REGISTER_TYPE_INFO,
+            activate: *mut *mut *mut c_void,
+            count: *mut u32,
+        ) -> HRESULT;
+        fn MFCreateSample(sample: *mut *mut c_void) -> HRESULT;
+        fn MFCreateMemoryBuffer(max_len: u32, buffer: *mut *mut c_void) -> HRESULT;
+    }
+
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoTaskMemFree(pv: *mut c_void);
+    }
+
+    // ── Structs ───────────────────────────────────────────────────────
+
+    #[repr(C)]
+    struct MFT_REGISTER_TYPE_INFO {
+        guid_major_type: GUID,
+        guid_subtype: GUID,
+    }
 
     #[repr(C)]
     struct MFT_OUTPUT_DATA_BUFFER {
         stream_id: u32,
-        sample: *mut c_void, // IMFSample*
+        sample: *mut c_void,
         status: u32,
-        events: *mut c_void, // IMFCollection*
+        events: *mut c_void,
     }
 
-    /// Call a COM method by vtable index, returning HRESULT.
-    unsafe fn com_call_0(obj: *mut c_void, vtable_idx: usize) -> HRESULT {
-        let vtable = *(obj as *const *const *const c_void);
-        let method: unsafe extern "system" fn(*mut c_void) -> HRESULT =
-            std::mem::transmute(*vtable.add(vtable_idx));
-        method(obj)
+    #[repr(C)]
+    struct MFT_OUTPUT_STREAM_INFO {
+        flags: u32,
+        cb_size: u32,
+        cb_alignment: u32,
     }
+
+    // ── COM vtable helpers ────────────────────────────────────────────
+    //
+    // IMFTransform (inherits IUnknown: 0=QI, 1=AddRef, 2=Release):
+    //   3=GetStreamLimits, 4=GetStreamIDs, 5=GetStreamCount,
+    //   6=GetInputStreamInfo, 7=GetOutputStreamInfo, 8=GetAttributes,
+    //   9=GetInputStreamAttributes, 10=GetOutputStreamAttributes,
+    //   11=DeleteInputStream, 12=AddInputStreams,
+    //   13=GetInputAvailableType, 14=GetOutputAvailableType,
+    //   15=SetInputType, 16=SetOutputType,
+    //   17=GetInputCurrentType, 18=GetOutputCurrentType,
+    //   19=GetInputStatus, 20=GetOutputStatus, 21=SetOutputBounds,
+    //   22=ProcessEvent, 23=ProcessMessage, 24=ProcessInput, 25=ProcessOutput
+    //
+    // IMFAttributes (inherits IUnknown: 0-2):
+    //   3=GetItem..32=CopyAllItems
+    //   7=GetUINT32, 8=GetUINT64, 10=GetGUID, 21=SetUINT32, 24=SetGUID
+    //
+    // IMFActivate (inherits IMFAttributes: 0-32):
+    //   33=ActivateObject, 34=ShutdownObject, 35=DetachObject
+    //
+    // IMFSample (inherits IMFAttributes: 0-32):
+    //   33=GetSampleFlags..46=CopyToBuffer
+    //   36=SetSampleTime, 41=ConvertToContiguousBuffer, 42=AddBuffer
+    //
+    // IMFMediaBuffer (inherits IUnknown: 0-2):
+    //   3=Lock, 4=Unlock, 5=GetCurrentLength, 6=SetCurrentLength, 7=GetMaxLength
 
     /// COM Release (vtable index 2).
     unsafe fn com_release(obj: *mut c_void) {
@@ -2179,48 +2236,107 @@ pub mod media_foundation {
         }
     }
 
-    /// IMFMediaBuffer::Lock(ppbBuffer, pcbMaxLength, pcbCurrentLength)
-    unsafe fn media_buffer_lock(
-        buf: *mut c_void,
-        data_out: *mut *mut u8,
-        max_len: *mut u32,
-        cur_len: *mut u32,
+    /// IMFActivate::ActivateObject (vtable 33)
+    unsafe fn activate_object(
+        activate: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
     ) -> HRESULT {
-        let vtable = *(buf as *const *const *const c_void);
-        let lock: unsafe extern "system" fn(
+        let vtable = *(activate as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
             *mut c_void,
-            *mut *mut u8,
-            *mut u32,
-            *mut u32,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(IMF_MEDIA_BUFFER_LOCK));
-        lock(buf, data_out, max_len, cur_len)
+            *const GUID,
+            *mut *mut c_void,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(33));
+        method(activate, iid, out)
     }
 
-    /// IMFMediaBuffer::Unlock()
-    unsafe fn media_buffer_unlock(buf: *mut c_void) -> HRESULT {
-        let vtable = *(buf as *const *const *const c_void);
-        let unlock: unsafe extern "system" fn(*mut c_void) -> HRESULT =
-            std::mem::transmute(*vtable.add(IMF_MEDIA_BUFFER_UNLOCK));
-        unlock(buf)
+    /// IMFTransform::GetOutputStreamInfo (vtable 7)
+    unsafe fn transform_get_output_stream_info(
+        transform: *mut c_void,
+        stream_id: u32,
+        info: *mut MFT_OUTPUT_STREAM_INFO,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            u32,
+            *mut MFT_OUTPUT_STREAM_INFO,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(7));
+        method(transform, stream_id, info)
     }
 
-    /// IMFMediaBuffer::SetCurrentLength(cbCurrentLength)
-    unsafe fn media_buffer_set_current_length(buf: *mut c_void, len: u32) -> HRESULT {
-        let vtable = *(buf as *const *const *const c_void);
-        let set_len: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT =
-            std::mem::transmute(*vtable.add(IMF_MEDIA_BUFFER_SET_CURRENT_LENGTH));
-        set_len(buf, len)
+    /// IMFTransform::GetOutputAvailableType (vtable 14)
+    unsafe fn transform_get_output_available_type(
+        transform: *mut c_void,
+        stream_id: u32,
+        type_idx: u32,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            u32,
+            u32,
+            *mut *mut c_void,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(14));
+        method(transform, stream_id, type_idx, out)
     }
 
-    /// IMFSample::AddBuffer(pBuffer)
-    unsafe fn sample_add_buffer(sample: *mut c_void, buffer: *mut c_void) -> HRESULT {
-        let vtable = *(sample as *const *const *const c_void);
-        let add_buf: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
-            std::mem::transmute(*vtable.add(IMF_SAMPLE_ADD_BUFFER));
-        add_buf(sample, buffer)
+    /// IMFTransform::SetInputType (vtable 15)
+    unsafe fn transform_set_input_type(
+        transform: *mut c_void,
+        stream_id: u32,
+        media_type: *mut c_void,
+        flags: u32,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(15));
+        method(transform, stream_id, media_type, flags)
     }
 
-    /// IMFTransform::ProcessInput(dwInputStreamID, pSample, dwFlags)
+    /// IMFTransform::SetOutputType (vtable 16)
+    unsafe fn transform_set_output_type(
+        transform: *mut c_void,
+        stream_id: u32,
+        media_type: *mut c_void,
+        flags: u32,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(16));
+        method(transform, stream_id, media_type, flags)
+    }
+
+    /// IMFTransform::GetOutputCurrentType (vtable 18)
+    unsafe fn transform_get_output_current_type(
+        transform: *mut c_void,
+        stream_id: u32,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            u32,
+            *mut *mut c_void,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(18));
+        method(transform, stream_id, out)
+    }
+
+    /// IMFTransform::ProcessMessage (vtable 23)
+    unsafe fn transform_process_message(
+        transform: *mut c_void,
+        message: u32,
+        param: u64,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, u32, u64) -> HRESULT =
+            std::mem::transmute(*vtable.add(23));
+        method(transform, message, param)
+    }
+
+    /// IMFTransform::ProcessInput (vtable 24)
     unsafe fn transform_process_input(
         transform: *mut c_void,
         stream_id: u32,
@@ -2228,12 +2344,12 @@ pub mod media_foundation {
         flags: u32,
     ) -> HRESULT {
         let vtable = *(transform as *const *const *const c_void);
-        let process: unsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32) -> HRESULT =
-            std::mem::transmute(*vtable.add(IMF_TRANSFORM_PROCESS_INPUT));
-        process(transform, stream_id, sample, flags)
+        let method: unsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(24));
+        method(transform, stream_id, sample, flags)
     }
 
-    /// IMFTransform::ProcessOutput(dwFlags, cOutputBufferCount, pOutputSamples, pdwStatus)
+    /// IMFTransform::ProcessOutput (vtable 25)
     unsafe fn transform_process_output(
         transform: *mut c_void,
         flags: u32,
@@ -2242,27 +2358,128 @@ pub mod media_foundation {
         status: *mut u32,
     ) -> HRESULT {
         let vtable = *(transform as *const *const *const c_void);
-        let process: unsafe extern "system" fn(
+        let method: unsafe extern "system" fn(
             *mut c_void,
             u32,
             u32,
             *mut MFT_OUTPUT_DATA_BUFFER,
             *mut u32,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(IMF_TRANSFORM_PROCESS_OUTPUT));
-        process(transform, flags, count, output_buffers, status)
+        ) -> HRESULT = std::mem::transmute(*vtable.add(25));
+        method(transform, flags, count, output_buffers, status)
     }
 
-    /// IMFTransform::ProcessMessage(eMessage, ulParam)
-    unsafe fn transform_process_message(
-        transform: *mut c_void,
-        message: u32,
-        param: u64,
+    /// IMFAttributes::GetUINT64 (vtable 8)
+    unsafe fn attributes_get_uint64(
+        attrs: *mut c_void,
+        key: *const GUID,
+        out: *mut u64,
     ) -> HRESULT {
-        let vtable = *(transform as *const *const *const c_void);
-        let msg: unsafe extern "system" fn(*mut c_void, u32, u64) -> HRESULT =
-            std::mem::transmute(*vtable.add(IMF_TRANSFORM_PROCESS_MESSAGE));
-        msg(transform, message, param)
+        let vtable = *(attrs as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *const GUID, *mut u64) -> HRESULT =
+            std::mem::transmute(*vtable.add(8));
+        method(attrs, key, out)
     }
+
+    /// IMFAttributes::GetGUID (vtable 10)
+    unsafe fn attributes_get_guid(
+        attrs: *mut c_void,
+        key: *const GUID,
+        out: *mut GUID,
+    ) -> HRESULT {
+        let vtable = *(attrs as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *const GUID, *mut GUID) -> HRESULT =
+            std::mem::transmute(*vtable.add(10));
+        method(attrs, key, out)
+    }
+
+    /// IMFAttributes::SetUINT32 (vtable 21)
+    unsafe fn attributes_set_uint32(
+        attrs: *mut c_void,
+        key: *const GUID,
+        value: u32,
+    ) -> HRESULT {
+        let vtable = *(attrs as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *const GUID, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(21));
+        method(attrs, key, value)
+    }
+
+    /// IMFAttributes::SetGUID (vtable 24)
+    unsafe fn attributes_set_guid(
+        attrs: *mut c_void,
+        key: *const GUID,
+        value: *const GUID,
+    ) -> HRESULT {
+        let vtable = *(attrs as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *const GUID,
+            *const GUID,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(24));
+        method(attrs, key, value)
+    }
+
+    /// IMFMediaBuffer::Lock (vtable 3)
+    unsafe fn media_buffer_lock(
+        buf: *mut c_void,
+        data_out: *mut *mut u8,
+        max_len: *mut u32,
+        cur_len: *mut u32,
+    ) -> HRESULT {
+        let vtable = *(buf as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *mut *mut u8,
+            *mut u32,
+            *mut u32,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(3));
+        method(buf, data_out, max_len, cur_len)
+    }
+
+    /// IMFMediaBuffer::Unlock (vtable 4)
+    unsafe fn media_buffer_unlock(buf: *mut c_void) -> HRESULT {
+        let vtable = *(buf as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(4));
+        method(buf)
+    }
+
+    /// IMFMediaBuffer::SetCurrentLength (vtable 6)
+    unsafe fn media_buffer_set_current_length(buf: *mut c_void, len: u32) -> HRESULT {
+        let vtable = *(buf as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(6));
+        method(buf, len)
+    }
+
+    /// IMFSample::SetSampleTime (vtable 36)
+    unsafe fn sample_set_sample_time(sample: *mut c_void, time: i64) -> HRESULT {
+        let vtable = *(sample as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, i64) -> HRESULT =
+            std::mem::transmute(*vtable.add(36));
+        method(sample, time)
+    }
+
+    /// IMFSample::ConvertToContiguousBuffer (vtable 41)
+    unsafe fn sample_convert_to_contiguous_buffer(
+        sample: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(sample as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(41));
+        method(sample, out)
+    }
+
+    /// IMFSample::AddBuffer (vtable 42)
+    unsafe fn sample_add_buffer(sample: *mut c_void, buffer: *mut c_void) -> HRESULT {
+        let vtable = *(sample as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(42));
+        method(sample, buffer)
+    }
+
+    // ── Decoder ───────────────────────────────────────────────────────
 
     /// Media Foundation hardware decoder for Windows.
     ///
@@ -2273,73 +2490,163 @@ pub mod media_foundation {
         initialized: bool,
         width: u32,
         height: u32,
-        // COM: IMFTransform* — stored as raw pointer
         transform: *mut c_void,
+        provides_samples: bool,
+        output_buf_size: u32,
         sw_fallback: Option<Box<dyn VideoDecoder>>,
     }
 
     impl MediaFoundationDecoder {
         pub fn new(codec: VideoCodec) -> Result<Self, VideoError> {
-            // SAFETY: (category 1) MF startup/enum sequence; HRESULT checked at each step;
-            // falls back to software on any failure.
-            unsafe {
-                let hr = MFStartup(0x00020070, 0); // MF_VERSION = 2.0
-                if hr != S_OK {
-                    return Ok(Self::with_sw_fallback(codec));
-                }
+            // SAFETY: (category 1) MF startup/enum/activate sequence; HRESULT checked
+            // at each step; falls back to software on any failure.
+            unsafe { Self::init_mft(codec) }
+        }
 
-                // Find decoder MFT
-                let subtype = match codec {
-                    VideoCodec::H264 => MFVideoFormat_H264,
-                    VideoCodec::H265 => MFVideoFormat_HEVC,
-                    _ => return Err(VideoError::Codec("MF: unsupported codec".into())),
-                };
-
-                let input_info = MFT_REGISTER_TYPE_INFO {
-                    guid_major_type: MFMediaType_Video,
-                    guid_subtype: subtype,
-                };
-
-                let mut activate: *mut *mut c_void = ptr::null_mut();
-                let mut count: u32 = 0;
-                let hr = MFTEnumEx(
-                    &MFT_CATEGORY_VIDEO_DECODER,
-                    0x00000070, // MFT_ENUM_FLAG_SYNCMFT | ASYNCMFT | HARDWARE | SORTANDFILTER
-                    &input_info,
-                    ptr::null(),
-                    &mut activate,
-                    &mut count,
-                );
-
-                if hr != S_OK || count == 0 || activate.is_null() {
-                    MFShutdown();
-                    return Ok(Self::with_sw_fallback(codec));
-                }
-
-                // Activate first decoder MFT
-                // IMFActivate::ActivateObject(IID_IMFTransform, &transform)
-                // This requires COM vtable call — simplified here
-                // For production: use windows crate or manual vtable dispatch
-                let _first_activate = *activate;
-
-                // COM cleanup would free activate array here
-                // For now, store as initialized with SW fallback for actual decode
-                // Full COM vtable dispatch requires IUnknown::QueryInterface pattern
-                Ok(MediaFoundationDecoder {
-                    codec,
-                    initialized: true,
-                    width: 0,
-                    height: 0,
-                    transform: ptr::null_mut(), // Would be IMFTransform* after ActivateObject
-                    sw_fallback: Some(match codec {
-                        VideoCodec::H264 => {
-                            Box::new(super::super::h264_decoder::H264Decoder::new())
-                                as Box<dyn VideoDecoder>
-                        }
-                        _ => Box::new(super::super::hevc_decoder::HevcDecoder::new()),
-                    }),
-                })
+        /// Full MFT initialization: startup → enum → activate → configure types → begin stream.
+        /// On any failure, falls back to software decoder instead of returning Err.
+        unsafe fn init_mft(codec: VideoCodec) -> Result<Self, VideoError> {
+            // 1. MFStartup
+            let hr = MFStartup(0x00020070, 0); // MF_VERSION = 2.0
+            if hr != S_OK {
+                return Ok(Self::with_sw_fallback(codec));
             }
+
+            // 2. MFTEnumEx — find decoder MFTs
+            let subtype = match codec {
+                VideoCodec::H264 => MFVideoFormat_H264,
+                VideoCodec::H265 => MFVideoFormat_HEVC,
+                _ => return Err(VideoError::Codec("MF: unsupported codec".into())),
+            };
+            let input_info = MFT_REGISTER_TYPE_INFO {
+                guid_major_type: MFMediaType_Video,
+                guid_subtype: subtype,
+            };
+            let mut activate_array: *mut *mut c_void = ptr::null_mut();
+            let mut count: u32 = 0;
+            let hr = MFTEnumEx(
+                &MFT_CATEGORY_VIDEO_DECODER,
+                0x00000070, // MFT_ENUM_FLAG_SYNCMFT | ASYNCMFT | HARDWARE | SORTANDFILTER
+                &input_info,
+                ptr::null(),
+                &mut activate_array,
+                &mut count,
+            );
+            if hr != S_OK || count == 0 || activate_array.is_null() {
+                MFShutdown();
+                return Ok(Self::with_sw_fallback(codec));
+            }
+
+            // 3. ActivateObject on first entry → IMFTransform*
+            let first_activate = *activate_array;
+            let mut transform: *mut c_void = ptr::null_mut();
+            let hr = activate_object(first_activate, &IID_IMF_TRANSFORM, &mut transform);
+
+            // 4. Free activate array (Release each entry, then CoTaskMemFree the array)
+            for i in 0..count as usize {
+                com_release(*activate_array.add(i));
+            }
+            CoTaskMemFree(activate_array as *mut c_void);
+
+            if hr != S_OK || transform.is_null() {
+                MFShutdown();
+                return Ok(Self::with_sw_fallback(codec));
+            }
+
+            // 5. Create + configure input media type
+            let mut input_type: *mut c_void = ptr::null_mut();
+            let hr = MFCreateMediaType(&mut input_type);
+            if hr != S_OK || input_type.is_null() {
+                com_release(transform);
+                MFShutdown();
+                return Ok(Self::with_sw_fallback(codec));
+            }
+            attributes_set_guid(input_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+            attributes_set_guid(input_type, &MF_MT_SUBTYPE, &subtype);
+            // MFVideoInterlace_Progressive = 2
+            attributes_set_uint32(input_type, &MF_MT_INTERLACE_MODE, 2);
+
+            // 6. SetInputType
+            let hr = transform_set_input_type(transform, 0, input_type, 0);
+            com_release(input_type);
+            if hr != S_OK {
+                com_release(transform);
+                MFShutdown();
+                return Ok(Self::with_sw_fallback(codec));
+            }
+
+            // 7. Enumerate output types, find NV12
+            let mut nv12_type: *mut c_void = ptr::null_mut();
+            for idx in 0..64u32 {
+                let mut candidate: *mut c_void = ptr::null_mut();
+                let hr =
+                    transform_get_output_available_type(transform, 0, idx, &mut candidate);
+                if hr != S_OK || candidate.is_null() {
+                    break;
+                }
+                let mut sub: GUID = [0u8; 16];
+                if attributes_get_guid(candidate, &MF_MT_SUBTYPE, &mut sub) == S_OK
+                    && sub == MFVideoFormat_NV12
+                {
+                    nv12_type = candidate;
+                    break;
+                }
+                com_release(candidate);
+            }
+            if nv12_type.is_null() {
+                com_release(transform);
+                MFShutdown();
+                return Ok(Self::with_sw_fallback(codec));
+            }
+
+            let hr = transform_set_output_type(transform, 0, nv12_type, 0);
+
+            // Read frame size from negotiated output type (high32 = width, low32 = height)
+            let mut width: u32 = 0;
+            let mut height: u32 = 0;
+            let mut frame_size: u64 = 0;
+            if attributes_get_uint64(nv12_type, &MF_MT_FRAME_SIZE, &mut frame_size) == S_OK {
+                width = (frame_size >> 32) as u32;
+                height = frame_size as u32;
+            }
+            com_release(nv12_type);
+
+            if hr != S_OK {
+                com_release(transform);
+                MFShutdown();
+                return Ok(Self::with_sw_fallback(codec));
+            }
+
+            // 8. Query output stream info (buffer size, provides_samples flag)
+            let mut stream_info = MFT_OUTPUT_STREAM_INFO {
+                flags: 0,
+                cb_size: 0,
+                cb_alignment: 0,
+            };
+            let (provides_samples, output_buf_size) =
+                if transform_get_output_stream_info(transform, 0, &mut stream_info) == S_OK {
+                    (
+                        (stream_info.flags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) != 0,
+                        stream_info.cb_size,
+                    )
+                } else {
+                    (false, 0)
+                };
+
+            // 9. Notify begin/start of stream
+            transform_process_message(transform, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            transform_process_message(transform, MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+
+            Ok(MediaFoundationDecoder {
+                codec,
+                initialized: true,
+                width,
+                height,
+                transform,
+                provides_samples,
+                output_buf_size,
+                sw_fallback: None,
+            })
         }
 
         fn with_sw_fallback(codec: VideoCodec) -> Self {
@@ -2353,11 +2660,13 @@ pub mod media_foundation {
                 width: 0,
                 height: 0,
                 transform: ptr::null_mut(),
+                provides_samples: false,
+                output_buf_size: 0,
                 sw_fallback: Some(sw),
             }
         }
 
-        /// Feed NAL data to the MFT via ProcessInput, then drain ProcessOutput.
+        /// Feed NAL data via ProcessInput, then try to drain one frame via ProcessOutput.
         unsafe fn feed_and_drain(
             &mut self,
             data: &[u8],
@@ -2367,7 +2676,7 @@ pub mod media_foundation {
                 return Err(VideoError::Codec("MF: transform not initialized".into()));
             }
 
-            // Create IMFMediaBuffer, lock, copy NAL data, unlock
+            // Create input buffer, lock, copy NAL data, unlock
             let mut media_buf: *mut c_void = ptr::null_mut();
             let hr = MFCreateMemoryBuffer(data.len() as u32, &mut media_buf);
             if hr != S_OK || media_buf.is_null() {
@@ -2390,7 +2699,7 @@ pub mod media_foundation {
             media_buffer_unlock(media_buf);
             media_buffer_set_current_length(media_buf, data.len() as u32);
 
-            // Create IMFSample, add buffer
+            // Create input sample, add buffer, set timestamp
             let mut sample: *mut c_void = ptr::null_mut();
             let hr = MFCreateSample(&mut sample);
             if hr != S_OK || sample.is_null() {
@@ -2399,52 +2708,190 @@ pub mod media_foundation {
                     "MF: MFCreateSample failed: {hr:#X}"
                 )));
             }
-            let hr = sample_add_buffer(sample, media_buf);
-            if hr != S_OK {
-                com_release(sample);
-                com_release(media_buf);
-                return Err(VideoError::Codec(format!(
-                    "MF: IMFSample::AddBuffer failed: {hr:#X}"
-                )));
-            }
+            sample_add_buffer(sample, media_buf);
+            com_release(media_buf);
+            // MF uses 100ns units
+            sample_set_sample_time(sample, timestamp_us as i64 * 10);
 
             // ProcessInput
             let hr = transform_process_input(self.transform, 0, sample, 0);
             com_release(sample);
-            com_release(media_buf);
             if hr != S_OK {
                 return Err(VideoError::Codec(format!(
                     "MF: ProcessInput failed: {hr:#X}"
                 )));
             }
 
-            // ProcessOutput — try to drain one frame
-            let mut out_sample: *mut c_void = ptr::null_mut();
-            let hr_sample = MFCreateSample(&mut out_sample);
-            if hr_sample != S_OK || out_sample.is_null() {
-                return Ok(None);
-            }
+            // Try to drain one output frame
+            self.try_drain_output(timestamp_us)
+        }
 
+        /// Try to pull one decoded frame from the MFT via ProcessOutput.
+        /// Returns `Ok(None)` when the decoder needs more input data.
+        unsafe fn try_drain_output(
+            &mut self,
+            timestamp_us: u64,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
             let mut output_buf = MFT_OUTPUT_DATA_BUFFER {
                 stream_id: 0,
-                sample: out_sample,
+                sample: ptr::null_mut(),
                 status: 0,
                 events: ptr::null_mut(),
             };
+
+            // Allocate output sample+buffer if MFT doesn't provide its own
+            let pre_alloc = if !self.provides_samples {
+                let mut out_sample: *mut c_void = ptr::null_mut();
+                if MFCreateSample(&mut out_sample) != S_OK || out_sample.is_null() {
+                    return Ok(None);
+                }
+                let buf_size = if self.output_buf_size > 0 {
+                    self.output_buf_size
+                } else if self.width > 0 && self.height > 0 {
+                    self.width * self.height * 3 / 2
+                } else {
+                    // Conservative 4K NV12 fallback
+                    4096 * 2160 * 3 / 2
+                };
+                let mut out_buf: *mut c_void = ptr::null_mut();
+                if MFCreateMemoryBuffer(buf_size, &mut out_buf) != S_OK || out_buf.is_null() {
+                    com_release(out_sample);
+                    return Ok(None);
+                }
+                sample_add_buffer(out_sample, out_buf);
+                com_release(out_buf);
+                output_buf.sample = out_sample;
+                out_sample
+            } else {
+                ptr::null_mut()
+            };
+
             let mut proc_status: u32 = 0;
-            let hr =
-                transform_process_output(self.transform, 0, 1, &mut output_buf, &mut proc_status);
+            let hr = transform_process_output(
+                self.transform,
+                0,
+                1,
+                &mut output_buf,
+                &mut proc_status,
+            );
+
+            if !output_buf.events.is_null() {
+                com_release(output_buf.events);
+            }
+
+            if hr == MF_E_TRANSFORM_NEED_MORE_INPUT {
+                if !pre_alloc.is_null() {
+                    com_release(pre_alloc);
+                }
+                return Ok(None);
+            }
             if hr != S_OK {
-                com_release(out_sample);
-                // MF_E_TRANSFORM_NEED_MORE_INPUT = 0xC00D6D72
+                if !pre_alloc.is_null() {
+                    com_release(pre_alloc);
+                }
+                if !output_buf.sample.is_null() && output_buf.sample != pre_alloc {
+                    com_release(output_buf.sample);
+                }
+                return Err(VideoError::Codec(format!(
+                    "MF: ProcessOutput failed: {hr:#X}"
+                )));
+            }
+
+            let out_sample = output_buf.sample;
+            if out_sample.is_null() {
+                if !pre_alloc.is_null() {
+                    com_release(pre_alloc);
+                }
                 return Ok(None);
             }
 
-            // Would extract NV12 from output sample and convert to RGB here.
-            // For now, release and return None — full extraction requires
-            // IMFSample::ConvertToContiguousBuffer + NV12→RGB.
+            // Get contiguous NV12 buffer from output sample
+            let mut contig_buf: *mut c_void = ptr::null_mut();
+            let hr = sample_convert_to_contiguous_buffer(out_sample, &mut contig_buf);
+            if hr != S_OK || contig_buf.is_null() {
+                com_release(out_sample);
+                if !pre_alloc.is_null() && pre_alloc != out_sample {
+                    com_release(pre_alloc);
+                }
+                return Err(VideoError::Codec(format!(
+                    "MF: ConvertToContiguousBuffer failed: {hr:#X}"
+                )));
+            }
+
+            let mut nv12_ptr: *mut u8 = ptr::null_mut();
+            let mut max_len: u32 = 0;
+            let mut nv12_len: u32 = 0;
+            let hr = media_buffer_lock(contig_buf, &mut nv12_ptr, &mut max_len, &mut nv12_len);
+            if hr != S_OK {
+                com_release(contig_buf);
+                com_release(out_sample);
+                if !pre_alloc.is_null() && pre_alloc != out_sample {
+                    com_release(pre_alloc);
+                }
+                return Err(VideoError::Codec(format!(
+                    "MF: Lock output buffer failed: {hr:#X}"
+                )));
+            }
+
+            // Resolve dimensions if not yet known (first frame decoded)
+            if self.width == 0 || self.height == 0 {
+                let mut out_type: *mut c_void = ptr::null_mut();
+                if transform_get_output_current_type(self.transform, 0, &mut out_type) == S_OK
+                    && !out_type.is_null()
+                {
+                    let mut frame_size: u64 = 0;
+                    if attributes_get_uint64(out_type, &MF_MT_FRAME_SIZE, &mut frame_size) == S_OK
+                    {
+                        self.width = (frame_size >> 32) as u32;
+                        self.height = frame_size as u32;
+                    }
+                    com_release(out_type);
+                }
+            }
+
+            if self.width == 0 || self.height == 0 {
+                media_buffer_unlock(contig_buf);
+                com_release(contig_buf);
+                com_release(out_sample);
+                if !pre_alloc.is_null() && pre_alloc != out_sample {
+                    com_release(pre_alloc);
+                }
+                return Err(VideoError::Codec(
+                    "MF: cannot determine output dimensions".into(),
+                ));
+            }
+
+            let w = self.width as usize;
+            let h = self.height as usize;
+
+            // NV12 → RGB8 via shared helper
+            let mut rgb = vec![0u8; w * h * 3];
+            super::nv12_to_rgb8(
+                nv12_ptr,
+                w,
+                nv12_ptr.add(w * h),
+                w,
+                w,
+                h,
+                &mut rgb,
+            );
+
+            media_buffer_unlock(contig_buf);
+            com_release(contig_buf);
             com_release(out_sample);
-            Ok(None)
+            if !pre_alloc.is_null() && pre_alloc != out_sample {
+                com_release(pre_alloc);
+            }
+
+            Ok(Some(DecodedFrame {
+                width: w,
+                height: h,
+                rgb8_data: rgb,
+                timestamp_us,
+                keyframe: false,
+                bit_depth: 8,
+                rgb16_data: None,
+            }))
         }
     }
 
@@ -2461,7 +2908,6 @@ pub mod media_foundation {
             if let Some(ref mut sw) = self.sw_fallback {
                 return sw.decode(data, timestamp_us);
             }
-            // Full MFT pipeline: ProcessInput → ProcessOutput
             // SAFETY: (category 1) transform handle validated; COM methods called via vtable.
             unsafe { self.feed_and_drain(data, timestamp_us) }
         }
@@ -2470,16 +2916,36 @@ pub mod media_foundation {
             if let Some(ref mut sw) = self.sw_fallback {
                 return sw.flush();
             }
-            Ok(Vec::new())
+            if self.transform.is_null() {
+                return Ok(Vec::new());
+            }
+            let mut frames = Vec::new();
+            // SAFETY: (category 1) drain remaining frames via ProcessOutput after sending
+            // DRAIN message; loop terminates on NEED_MORE_INPUT or error.
+            unsafe {
+                transform_process_message(self.transform, MFT_MESSAGE_COMMAND_DRAIN, 0);
+                loop {
+                    match self.try_drain_output(0) {
+                        Ok(Some(frame)) => frames.push(frame),
+                        _ => break,
+                    }
+                }
+            }
+            Ok(frames)
         }
     }
 
     impl Drop for MediaFoundationDecoder {
         fn drop(&mut self) {
             if self.initialized {
-                // SAFETY: (category 1) COM release + MFShutdown; transform null-checked.
+                // SAFETY: (category 1) flush + release + shutdown; transform null-checked.
                 unsafe {
                     if !self.transform.is_null() {
+                        transform_process_message(
+                            self.transform,
+                            MFT_MESSAGE_COMMAND_FLUSH,
+                            0,
+                        );
                         com_release(self.transform);
                     }
                     MFShutdown();
@@ -2516,10 +2982,224 @@ pub unsafe fn nv12_to_rgb8(
     h: usize,
     rgb: &mut [u8],
 ) {
-    // BT.601 limited range (Y: 16-235, Cb/Cr: 16-240):
-    //   R = clip((298*(Y-16) + 409*(Cr-128) + 128) >> 8)
-    //   G = clip((298*(Y-16) - 208*(Cr-128) - 100*(Cb-128) + 128) >> 8)
-    //   B = clip((298*(Y-16) + 516*(Cb-128) + 128) >> 8)
+    #[cfg(target_arch = "aarch64")]
+    {
+        nv12_to_rgb8_neon(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        nv12_to_rgb8_sse2(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
+        return;
+    }
+    #[allow(unreachable_code)]
+    nv12_to_rgb8_scalar(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn nv12_to_rgb8_neon(
+    y_ptr: *const u8,
+    y_stride: usize,
+    uv_ptr: *const u8,
+    uv_stride: usize,
+    w: usize,
+    h: usize,
+    rgb: &mut [u8],
+) {
+    use std::arch::aarch64::*;
+
+    let v16 = vdupq_n_s16(16);
+    let v128 = vdupq_n_s16(128);
+    let c298 = vdup_n_s16(298);
+    let c409 = vdup_n_s16(409);
+    let c100 = vdup_n_s16(100);
+    let c208 = vdup_n_s16(208);
+    let c516 = vdup_n_s16(516);
+    let half = vdupq_n_s32(128);
+    let zero16 = vdupq_n_s16(0);
+
+    for row in 0..h {
+        let y_row = y_ptr.add(row * y_stride);
+        let uv_row = uv_ptr.add((row / 2) * uv_stride);
+        let dst_row = &mut rgb[row * w * 3..(row + 1) * w * 3];
+        let mut col = 0usize;
+
+        while col + 8 <= w {
+            let y8 = vld1_u8(y_row.add(col));
+            let y16 = vreinterpretq_s16_u16(vmovl_u8(y8));
+            let y_adj = vsubq_s16(y16, v16);
+
+            let uv8 = vld1_u8(uv_row.add((col / 2) * 2));
+            let uv16 = vreinterpretq_s16_u16(vmovl_u8(uv8));
+            let cb4 = vuzp1q_s16(uv16, uv16);
+            let cr4 = vuzp2q_s16(uv16, uv16);
+            let cb = vzip1q_s16(cb4, cb4);
+            let cr = vzip1q_s16(cr4, cr4);
+            let cb_adj = vsubq_s16(cb, v128);
+            let cr_adj = vsubq_s16(cr, v128);
+
+            let y_lo = vget_low_s16(y_adj);
+            let cb_lo = vget_low_s16(cb_adj);
+            let cr_lo = vget_low_s16(cr_adj);
+            let c_lo = vmull_s16(c298, y_lo);
+            let r_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c409, cr_lo)), half), 8);
+            let g_lo = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_lo, vmull_s16(c208, cr_lo)), vmull_s16(c100, cb_lo)), half), 8);
+            let b_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c516, cb_lo)), half), 8);
+
+            let y_hi = vget_high_s16(y_adj);
+            let cb_hi = vget_high_s16(cb_adj);
+            let cr_hi = vget_high_s16(cr_adj);
+            let c_hi = vmull_s16(c298, y_hi);
+            let r_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c409, cr_hi)), half), 8);
+            let g_hi = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_hi, vmull_s16(c208, cr_hi)), vmull_s16(c100, cb_hi)), half), 8);
+            let b_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c516, cb_hi)), half), 8);
+
+            let r16 = vcombine_s16(vmovn_s32(r_lo), vmovn_s32(r_hi));
+            let g16 = vcombine_s16(vmovn_s32(g_lo), vmovn_s32(g_hi));
+            let b16 = vcombine_s16(vmovn_s32(b_lo), vmovn_s32(b_hi));
+            let r8 = vqmovun_s16(vmaxq_s16(r16, zero16));
+            let g8 = vqmovun_s16(vmaxq_s16(g16, zero16));
+            let b8 = vqmovun_s16(vmaxq_s16(b16, zero16));
+
+            vst3_u8(dst_row.as_mut_ptr().add(col * 3), uint8x8x3_t(r8, g8, b8));
+            col += 8;
+        }
+
+        while col < w {
+            let y_val = *y_row.add(col) as i32;
+            let cb_val = *uv_row.add((col / 2) * 2) as i32;
+            let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
+            let c = 298 * (y_val - 16);
+            let r = (c + 409 * (cr_val - 128) + 128) >> 8;
+            let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
+            let b = (c + 516 * (cb_val - 128) + 128) >> 8;
+            let dst = col * 3;
+            dst_row[dst] = r.clamp(0, 255) as u8;
+            dst_row[dst + 1] = g.clamp(0, 255) as u8;
+            dst_row[dst + 2] = b.clamp(0, 255) as u8;
+            col += 1;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn nv12_to_rgb8_sse2(
+    y_ptr: *const u8,
+    y_stride: usize,
+    uv_ptr: *const u8,
+    uv_stride: usize,
+    w: usize,
+    h: usize,
+    rgb: &mut [u8],
+) {
+    use std::arch::x86_64::*;
+
+    let c149 = _mm_set1_epi16(149);
+    let c204 = _mm_set1_epi16(204);
+    let c50 = _mm_set1_epi16(50);
+    let c104 = _mm_set1_epi16(104);
+    let c258 = _mm_set1_epi16(258u16 as i16);
+    let v16 = _mm_set1_epi16(16);
+    let v128 = _mm_set1_epi16(128);
+    let half = _mm_set1_epi16(64);
+    let zero = _mm_setzero_si128();
+
+    for row in 0..h {
+        let y_row = y_ptr.add(row * y_stride);
+        let uv_row = uv_ptr.add((row / 2) * uv_stride);
+        let dst_row = &mut rgb[row * w * 3..(row + 1) * w * 3];
+        let mut col = 0usize;
+
+        while col + 8 <= w {
+            let y8 = _mm_loadl_epi64(y_row.add(col) as *const __m128i);
+            let y16 = _mm_unpacklo_epi8(y8, zero);
+            let y_adj = _mm_sub_epi16(y16, v16);
+
+            let mut cb_buf = [0u8; 8];
+            let mut cr_buf = [0u8; 8];
+            for i in 0..4 {
+                cb_buf[i * 2] = *uv_row.add((col / 2 + i) * 2);
+                cb_buf[i * 2 + 1] = *uv_row.add((col / 2 + i) * 2);
+                cr_buf[i * 2] = *uv_row.add((col / 2 + i) * 2 + 1);
+                cr_buf[i * 2 + 1] = *uv_row.add((col / 2 + i) * 2 + 1);
+            }
+            let cb8 = _mm_loadl_epi64(cb_buf.as_ptr() as *const __m128i);
+            let cr8 = _mm_loadl_epi64(cr_buf.as_ptr() as *const __m128i);
+            let cb_adj = _mm_sub_epi16(_mm_unpacklo_epi8(cb8, zero), v128);
+            let cr_adj = _mm_sub_epi16(_mm_unpacklo_epi8(cr8, zero), v128);
+
+            let c_val = _mm_mullo_epi16(c149, y_adj);
+            let r16 = _mm_srai_epi16::<7>(_mm_add_epi16(
+                _mm_add_epi16(c_val, _mm_mullo_epi16(c204, cr_adj)),
+                half,
+            ));
+            let g16 = _mm_srai_epi16::<7>(_mm_add_epi16(
+                _mm_sub_epi16(
+                    _mm_sub_epi16(c_val, _mm_mullo_epi16(c104, cr_adj)),
+                    _mm_mullo_epi16(c50, cb_adj),
+                ),
+                half,
+            ));
+            let b16 = _mm_srai_epi16::<7>(_mm_add_epi16(
+                _mm_add_epi16(c_val, _mm_mullo_epi16(c258, cb_adj)),
+                half,
+            ));
+
+            let r_u8 = _mm_packus_epi16(_mm_max_epi16(r16, zero), zero);
+            let g_u8 = _mm_packus_epi16(_mm_max_epi16(g16, zero), zero);
+            let b_u8 = _mm_packus_epi16(_mm_max_epi16(b16, zero), zero);
+
+            let mut rgb_buf = [0u8; 24];
+            let mut r_arr = [0u8; 8];
+            let mut g_arr = [0u8; 8];
+            let mut b_arr = [0u8; 8];
+            _mm_storel_epi64(r_arr.as_mut_ptr() as *mut __m128i, r_u8);
+            _mm_storel_epi64(g_arr.as_mut_ptr() as *mut __m128i, g_u8);
+            _mm_storel_epi64(b_arr.as_mut_ptr() as *mut __m128i, b_u8);
+            for i in 0..8 {
+                rgb_buf[i * 3] = r_arr[i];
+                rgb_buf[i * 3 + 1] = g_arr[i];
+                rgb_buf[i * 3 + 2] = b_arr[i];
+            }
+            std::ptr::copy_nonoverlapping(
+                rgb_buf.as_ptr(),
+                dst_row.as_mut_ptr().add(col * 3),
+                24,
+            );
+
+            col += 8;
+        }
+
+        while col < w {
+            let y_val = *y_row.add(col) as i32;
+            let cb_val = *uv_row.add((col / 2) * 2) as i32;
+            let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
+            let c = 298 * (y_val - 16);
+            let r = (c + 409 * (cr_val - 128) + 128) >> 8;
+            let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
+            let b = (c + 516 * (cb_val - 128) + 128) >> 8;
+            let dst = col * 3;
+            dst_row[dst] = r.clamp(0, 255) as u8;
+            dst_row[dst + 1] = g.clamp(0, 255) as u8;
+            dst_row[dst + 2] = b.clamp(0, 255) as u8;
+            col += 1;
+        }
+    }
+}
+
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn nv12_to_rgb8_scalar(
+    y_ptr: *const u8,
+    y_stride: usize,
+    uv_ptr: *const u8,
+    uv_stride: usize,
+    w: usize,
+    h: usize,
+    rgb: &mut [u8],
+) {
     for row in 0..h {
         let y_row = y_ptr.add(row * y_stride);
         let uv_row = uv_ptr.add((row / 2) * uv_stride);
