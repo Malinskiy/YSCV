@@ -2156,6 +2156,42 @@ pub mod media_foundation {
 
     const MFT_OUTPUT_STREAM_PROVIDES_SAMPLES: u32 = 0x100;
 
+    // DXVA / D3D11 constants
+    const MFT_MESSAGE_SET_D3D_MANAGER: u32 = 0x2;
+    const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
+    const D3D11_CREATE_DEVICE_VIDEO_SUPPORT: u32 = 0x800;
+    const D3D11_SDK_VERSION: u32 = 7;
+    const D3D_FEATURE_LEVEL_11_0: u32 = 0xb000;
+    const D3D11_USAGE_STAGING: u32 = 3;
+    const D3D11_CPU_ACCESS_READ: u32 = 0x20000;
+    const D3D11_MAP_READ: u32 = 1;
+    const DXGI_FORMAT_NV12: u32 = 103;
+
+    // IID_IMFDXGIDeviceManager {eb533d5d-2db6-40f8-97a9-494692014f07}
+    #[allow(dead_code)]
+    const IID_IMFDXGIDeviceManager: GUID = [
+        0x5d, 0x3d, 0x53, 0xeb, 0xb6, 0x2d, 0xf8, 0x40, 0x97, 0xa9, 0x49, 0x46, 0x92, 0x01,
+        0x4f, 0x07,
+    ];
+
+    // IID_IMFDXGIBuffer {e7174cfa-1c9e-48b1-8866-626226bfc258}
+    const IID_IMFDXGIBuffer: GUID = [
+        0xfa, 0x4c, 0x17, 0xe7, 0x9e, 0x1c, 0xb1, 0x48, 0x88, 0x66, 0x62, 0x62, 0x26, 0xbf,
+        0xc2, 0x58,
+    ];
+
+    // IID_ID3D11Texture2D {6f15aaf2-d208-4e89-9ab4-489535d34f9c}
+    const IID_ID3D11Texture2D: GUID = [
+        0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3,
+        0x4f, 0x9c,
+    ];
+
+    // IID_ID3D10Multithread {9B7E4E00-342C-4106-A19F-4F2704F689F0}
+    const IID_ID3D10Multithread: GUID = [
+        0x00, 0x4e, 0x7e, 0x9b, 0x2c, 0x34, 0x06, 0x41, 0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6,
+        0x89, 0xf0,
+    ];
+
     // ── Extern function bindings ──────────────────────────────────────
 
     #[link(name = "mfplat")]
@@ -2177,6 +2213,30 @@ pub mod media_foundation {
         ) -> HRESULT;
         fn MFCreateSample(sample: *mut *mut c_void) -> HRESULT;
         fn MFCreateMemoryBuffer(max_len: u32, buffer: *mut *mut c_void) -> HRESULT;
+    }
+
+    #[link(name = "mfplat")]
+    unsafe extern "system" {
+        fn MFCreateDXGIDeviceManager(
+            reset_token: *mut u32,
+            pp_device_manager: *mut *mut c_void,
+        ) -> HRESULT;
+    }
+
+    #[link(name = "d3d11")]
+    unsafe extern "system" {
+        fn D3D11CreateDevice(
+            p_adapter: *mut c_void,
+            driver_type: u32,
+            software: *mut c_void,
+            flags: u32,
+            p_feature_levels: *const u32,
+            feature_levels: u32,
+            sdk_version: u32,
+            pp_device: *mut *mut c_void,
+            p_feature_level: *mut u32,
+            pp_immediate_context: *mut *mut c_void,
+        ) -> HRESULT;
     }
 
     #[link(name = "ole32")]
@@ -2227,6 +2287,28 @@ pub mod media_foundation {
         flags: u32,
         cb_size: u32,
         cb_alignment: u32,
+    }
+
+    #[repr(C)]
+    struct D3D11_TEXTURE2D_DESC {
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        array_size: u32,
+        format: u32,
+        sample_count: u32,
+        sample_quality: u32,
+        usage: u32,
+        bind_flags: u32,
+        cpu_access_flags: u32,
+        misc_flags: u32,
+    }
+
+    #[repr(C)]
+    struct D3D11_MAPPED_SUBRESOURCE {
+        p_data: *mut c_void,
+        row_pitch: u32,
+        _depth_pitch: u32,
     }
 
     // ── COM vtable helpers ────────────────────────────────────────────
@@ -2579,12 +2661,160 @@ pub mod media_foundation {
         method(sample, out)
     }
 
+    /// IMFSample::GetBufferByIndex (vtable 40)
+    unsafe fn sample_get_buffer_by_index(
+        sample: *mut c_void,
+        index: u32,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(sample as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(40));
+        method(sample, index, out)
+    }
+
     /// IMFSample::AddBuffer (vtable 42)
     unsafe fn sample_add_buffer(sample: *mut c_void, buffer: *mut c_void) -> HRESULT {
         let vtable = *(sample as *const *const *const c_void);
         let method: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
             std::mem::transmute(*vtable.add(42));
         method(sample, buffer)
+    }
+
+    // ── DXVA vtable helpers ─────────────────────────────────────────
+
+    /// IMFDXGIDeviceManager::ResetDevice (vtable 7)
+    unsafe fn dxgi_manager_reset_device(
+        manager: *mut c_void,
+        device: *mut c_void,
+        reset_token: u32,
+    ) -> HRESULT {
+        let vtable = *(manager as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(7));
+        method(manager, device, reset_token)
+    }
+
+    /// IMFDXGIBuffer::GetResource (vtable 3)
+    unsafe fn dxgi_buffer_get_resource(
+        buffer: *mut c_void,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(buffer as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *const GUID,
+            *mut *mut c_void,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(3));
+        method(buffer, riid, out)
+    }
+
+    /// IMFDXGIBuffer::GetSubresourceIndex (vtable 4)
+    unsafe fn dxgi_buffer_get_subresource_index(
+        buffer: *mut c_void,
+        out: *mut u32,
+    ) -> HRESULT {
+        let vtable = *(buffer as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(4));
+        method(buffer, out)
+    }
+
+    /// ID3D11Device::CreateTexture2D (vtable 5)
+    unsafe fn d3d11_create_texture_2d(
+        device: *mut c_void,
+        desc: *const D3D11_TEXTURE2D_DESC,
+        initial_data: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let vtable = *(device as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *const D3D11_TEXTURE2D_DESC,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(5));
+        method(device, desc, initial_data, out)
+    }
+
+    /// ID3D11DeviceContext::Map (vtable 14)
+    unsafe fn d3d11_context_map(
+        context: *mut c_void,
+        resource: *mut c_void,
+        subresource: u32,
+        map_type: u32,
+        map_flags: u32,
+        mapped: *mut D3D11_MAPPED_SUBRESOURCE,
+    ) -> HRESULT {
+        let vtable = *(context as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            u32,
+            u32,
+            u32,
+            *mut D3D11_MAPPED_SUBRESOURCE,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(14));
+        method(context, resource, subresource, map_type, map_flags, mapped)
+    }
+
+    /// ID3D11DeviceContext::Unmap (vtable 15)
+    unsafe fn d3d11_context_unmap(
+        context: *mut c_void,
+        resource: *mut c_void,
+        subresource: u32,
+    ) {
+        let vtable = *(context as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, *mut c_void, u32) =
+            std::mem::transmute(*vtable.add(15));
+        method(context, resource, subresource)
+    }
+
+    /// ID3D11DeviceContext::CopySubresourceRegion (vtable 46)
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn d3d11_context_copy_subresource_region(
+        context: *mut c_void,
+        dst: *mut c_void,
+        dst_subresource: u32,
+        dst_x: u32,
+        dst_y: u32,
+        dst_z: u32,
+        src: *mut c_void,
+        src_subresource: u32,
+        src_box: *const c_void,
+    ) {
+        let vtable = *(context as *const *const *const c_void);
+        let method: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            *mut c_void,
+            u32,
+            *const c_void,
+        ) = std::mem::transmute(*vtable.add(46));
+        method(
+            context,
+            dst,
+            dst_subresource,
+            dst_x,
+            dst_y,
+            dst_z,
+            src,
+            src_subresource,
+            src_box,
+        )
+    }
+
+    /// ID3D10Multithread::SetMultithreadProtected (vtable 5)
+    unsafe fn d3d10_multithread_set_protected(mt: *mut c_void, protect: i32) -> i32 {
+        let vtable = *(mt as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void, i32) -> i32 =
+            std::mem::transmute(*vtable.add(5));
+        method(mt, protect)
     }
 
     // ── Decoder ───────────────────────────────────────────────────────
@@ -2608,6 +2838,14 @@ pub mod media_foundation {
         cached_sample: *mut c_void,
         cached_buffer: *mut c_void,
         sw_fallback: Option<Box<dyn VideoDecoder>>,
+        dxva_enabled: bool,
+        d3d11_device: *mut c_void,
+        d3d11_context: *mut c_void,
+        dxgi_manager: *mut c_void,
+        _reset_token: u32,
+        staging_texture: *mut c_void,
+        staging_width: u32,
+        staging_height: u32,
     }
 
     impl MediaFoundationDecoder {
@@ -2635,6 +2873,10 @@ pub mod media_foundation {
                 _ => &CLSID_CMSHEVCDecoderMFT,
             };
 
+            // DXVA: create D3D11 device + DXGI device manager
+            let (d3d11_device, d3d11_context, dxgi_manager, reset_token) =
+                Self::try_init_dxva();
+
             let mut transform: *mut c_void = ptr::null_mut();
             let hr = CoCreateInstance(
                 clsid,
@@ -2645,10 +2887,30 @@ pub mod media_foundation {
             );
             if hr != S_OK || transform.is_null() {
                 eprintln!("[MF] CoCreateInstance failed: hr={hr:#X}");
+                Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
             eprintln!("[MF] CoCreateInstance OK: {codec:?} transform={transform:?}");
+
+            // Set D3D manager on MFT BEFORE type negotiation
+            let dxva_enabled = if !dxgi_manager.is_null() {
+                let hr = transform_process_message(
+                    transform,
+                    MFT_MESSAGE_SET_D3D_MANAGER,
+                    dxgi_manager as u64,
+                );
+                if hr == S_OK {
+                    eprintln!("[MF] DXVA: SET_D3D_MANAGER OK");
+                    true
+                } else {
+                    eprintln!("[MF] DXVA: SET_D3D_MANAGER failed: hr={hr:#X}, falling back to software");
+                    Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
+                    false
+                }
+            } else {
+                false
+            };
 
             let mut input_type: *mut c_void = ptr::null_mut();
             let mut found_input = false;
@@ -2671,6 +2933,9 @@ pub mod media_foundation {
             }
             if !found_input || input_type.is_null() {
                 eprintln!("[MF] No matching input type for {codec:?}");
+                if !dxva_enabled {
+                    Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
+                }
                 com_release(transform);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
@@ -2680,13 +2945,15 @@ pub mod media_foundation {
             com_release(input_type);
             if hr != S_OK {
                 eprintln!("[MF] SetInputType failed: hr={hr:#X}");
+                if !dxva_enabled {
+                    Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
+                }
                 com_release(transform);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
             eprintln!("[MF] SetInputType OK");
 
-            // 7. Enumerate output types, find NV12
             let mut nv12_type: *mut c_void = ptr::null_mut();
             for idx in 0..64u32 {
                 let mut candidate: *mut c_void = ptr::null_mut();
@@ -2706,6 +2973,9 @@ pub mod media_foundation {
             }
             if nv12_type.is_null() {
                 eprintln!("[MF] No NV12 output type available");
+                if !dxva_enabled {
+                    Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
+                }
                 com_release(transform);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
@@ -2714,7 +2984,6 @@ pub mod media_foundation {
             let hr = transform_set_output_type(transform, 0, nv12_type, 0);
             eprintln!("[MF] SetOutputType(NV12): hr={hr:#X}");
 
-            // Read frame size from negotiated output type (high32 = width, low32 = height)
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             let mut frame_size: u64 = 0;
@@ -2725,12 +2994,14 @@ pub mod media_foundation {
             com_release(nv12_type);
 
             if hr != S_OK {
+                if !dxva_enabled {
+                    Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
+                }
                 com_release(transform);
                 MFShutdown();
                 return Ok(Self::with_sw_fallback(codec));
             }
 
-            // 8. Query output stream info (buffer size, provides_samples flag)
             let mut stream_info = MFT_OUTPUT_STREAM_INFO {
                 flags: 0,
                 cb_size: 0,
@@ -2746,12 +3017,11 @@ pub mod media_foundation {
                     (false, 0)
                 };
 
-            // 9. Notify begin/start of stream
             transform_process_message(transform, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
             transform_process_message(transform, MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
 
             eprintln!(
-                "[MF] Decoder ready: {codec:?} {width}x{height} provides_samples={provides_samples} buf_size={output_buf_size}"
+                "[MF] Decoder ready: {codec:?} {width}x{height} dxva={dxva_enabled} provides_samples={provides_samples} buf_size={output_buf_size}"
             );
 
             Ok(MediaFoundationDecoder {
@@ -2769,7 +3039,87 @@ pub mod media_foundation {
                 cached_sample: ptr::null_mut(),
                 cached_buffer: ptr::null_mut(),
                 sw_fallback: None,
+                dxva_enabled,
+                d3d11_device: if dxva_enabled { d3d11_device } else { ptr::null_mut() },
+                d3d11_context: if dxva_enabled { d3d11_context } else { ptr::null_mut() },
+                dxgi_manager: if dxva_enabled { dxgi_manager } else { ptr::null_mut() },
+                _reset_token: if dxva_enabled { reset_token } else { 0 },
+                staging_texture: ptr::null_mut(),
+                staging_width: 0,
+                staging_height: 0,
             })
+        }
+
+        /// Attempt D3D11 device + DXGI manager creation for DXVA.
+        /// Returns (device, context, manager, token) — all null on failure.
+        unsafe fn try_init_dxva() -> (*mut c_void, *mut c_void, *mut c_void, u32) {
+            let null = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), 0u32);
+
+            let feature_levels = [D3D_FEATURE_LEVEL_11_0];
+            let mut device: *mut c_void = ptr::null_mut();
+            let mut context: *mut c_void = ptr::null_mut();
+            let mut _feature_level: u32 = 0;
+
+            let hr = D3D11CreateDevice(
+                ptr::null_mut(),
+                D3D_DRIVER_TYPE_HARDWARE,
+                ptr::null_mut(),
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                feature_levels.as_ptr(),
+                feature_levels.len() as u32,
+                D3D11_SDK_VERSION,
+                &mut device,
+                &mut _feature_level,
+                &mut context,
+            );
+            if hr != S_OK || device.is_null() || context.is_null() {
+                eprintln!("[MF] DXVA: D3D11CreateDevice failed: hr={hr:#X}");
+                if !device.is_null() { com_release(device); }
+                if !context.is_null() { com_release(context); }
+                return null;
+            }
+            eprintln!("[MF] DXVA: D3D11 device created");
+
+            // Enable multithread protection (MF uses worker threads on this device)
+            let mut mt: *mut c_void = ptr::null_mut();
+            if com_query_interface(device, &IID_ID3D10Multithread, &mut mt) == S_OK
+                && !mt.is_null()
+            {
+                d3d10_multithread_set_protected(mt, 1);
+                com_release(mt);
+            }
+
+            let mut reset_token: u32 = 0;
+            let mut manager: *mut c_void = ptr::null_mut();
+            let hr = MFCreateDXGIDeviceManager(&mut reset_token, &mut manager);
+            if hr != S_OK || manager.is_null() {
+                eprintln!("[MF] DXVA: MFCreateDXGIDeviceManager failed: hr={hr:#X}");
+                com_release(device);
+                com_release(context);
+                return null;
+            }
+
+            let hr = dxgi_manager_reset_device(manager, device, reset_token);
+            if hr != S_OK {
+                eprintln!("[MF] DXVA: ResetDevice failed: hr={hr:#X}");
+                com_release(manager);
+                com_release(device);
+                com_release(context);
+                return null;
+            }
+            eprintln!("[MF] DXVA: device manager ready");
+
+            (device, context, manager, reset_token)
+        }
+
+        unsafe fn cleanup_dxva(
+            device: *mut c_void,
+            context: *mut c_void,
+            manager: *mut c_void,
+        ) {
+            if !manager.is_null() { com_release(manager); }
+            if !context.is_null() { com_release(context); }
+            if !device.is_null() { com_release(device); }
         }
 
         fn with_sw_fallback(codec: VideoCodec) -> Self {
@@ -2792,6 +3142,14 @@ pub mod media_foundation {
                 cached_sample: ptr::null_mut(),
                 cached_buffer: ptr::null_mut(),
                 sw_fallback: Some(sw),
+                dxva_enabled: false,
+                d3d11_device: ptr::null_mut(),
+                d3d11_context: ptr::null_mut(),
+                dxgi_manager: ptr::null_mut(),
+                _reset_token: 0,
+                staging_texture: ptr::null_mut(),
+                staging_width: 0,
+                staging_height: 0,
             }
         }
 
@@ -2998,7 +3356,185 @@ pub mod media_foundation {
                 return Ok(None);
             }
 
-            // Get contiguous NV12 buffer from output sample
+            let result = if self.dxva_enabled {
+                self.extract_dxva_frame(out_sample, timestamp_us)
+            } else {
+                self.extract_software_frame(out_sample, timestamp_us)
+            };
+
+            // Release MFT-provided sample (DXVA: provides_samples=true)
+            if self.provides_samples && out_sample != pre_alloc && !out_sample.is_null() {
+                com_release(out_sample);
+            }
+
+            result
+        }
+
+        unsafe fn extract_dxva_frame(
+            &mut self,
+            out_sample: *mut c_void,
+            timestamp_us: u64,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
+            let mut buffer: *mut c_void = ptr::null_mut();
+            let hr = sample_get_buffer_by_index(out_sample, 0, &mut buffer);
+            if hr != S_OK || buffer.is_null() {
+                return Err(VideoError::Codec(format!(
+                    "MF DXVA: GetBufferByIndex failed: {hr:#X}"
+                )));
+            }
+
+            let mut dxgi_buf: *mut c_void = ptr::null_mut();
+            let hr = com_query_interface(buffer, &IID_IMFDXGIBuffer, &mut dxgi_buf);
+            com_release(buffer);
+            if hr != S_OK || dxgi_buf.is_null() {
+                return Err(VideoError::Codec(format!(
+                    "MF DXVA: QI IMFDXGIBuffer failed: {hr:#X}"
+                )));
+            }
+
+            let mut texture: *mut c_void = ptr::null_mut();
+            dxgi_buffer_get_resource(dxgi_buf, &IID_ID3D11Texture2D, &mut texture);
+            let mut subresource: u32 = 0;
+            dxgi_buffer_get_subresource_index(dxgi_buf, &mut subresource);
+            com_release(dxgi_buf);
+
+            if texture.is_null() {
+                return Err(VideoError::Codec(
+                    "MF DXVA: GetResource returned null".into(),
+                ));
+            }
+
+            if self.width == 0 || self.height == 0 || self.stride == 0 {
+                self.resolve_output_dimensions();
+            }
+
+            if self.width == 0 || self.height == 0 {
+                com_release(texture);
+                return Err(VideoError::Codec(
+                    "MF DXVA: cannot determine output dimensions".into(),
+                ));
+            }
+
+            let coded_w = if self.stride > 0 {
+                self.stride
+            } else {
+                self.width
+            };
+            let coded_h = if self.coded_height > 0 {
+                self.coded_height
+            } else {
+                self.height
+            };
+            if self.staging_texture.is_null()
+                || self.staging_width != coded_w
+                || self.staging_height != coded_h
+            {
+                if !self.staging_texture.is_null() {
+                    com_release(self.staging_texture);
+                }
+                let desc = D3D11_TEXTURE2D_DESC {
+                    width: coded_w,
+                    height: coded_h,
+                    mip_levels: 1,
+                    array_size: 1,
+                    format: DXGI_FORMAT_NV12,
+                    sample_count: 1,
+                    sample_quality: 0,
+                    usage: D3D11_USAGE_STAGING,
+                    bind_flags: 0,
+                    cpu_access_flags: D3D11_CPU_ACCESS_READ,
+                    misc_flags: 0,
+                };
+                let mut staging: *mut c_void = ptr::null_mut();
+                let hr = d3d11_create_texture_2d(
+                    self.d3d11_device,
+                    &desc,
+                    ptr::null(),
+                    &mut staging,
+                );
+                if hr != S_OK || staging.is_null() {
+                    com_release(texture);
+                    return Err(VideoError::Codec(format!(
+                        "MF DXVA: CreateTexture2D staging failed: {hr:#X}"
+                    )));
+                }
+                self.staging_texture = staging;
+                self.staging_width = coded_w;
+                self.staging_height = coded_h;
+                eprintln!(
+                    "[MF] DXVA staging texture: {coded_w}x{coded_h}"
+                );
+            }
+
+            d3d11_context_copy_subresource_region(
+                self.d3d11_context,
+                self.staging_texture,
+                0,
+                0,
+                0,
+                0,
+                texture,
+                subresource,
+                ptr::null(),
+            );
+            com_release(texture);
+
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE {
+                p_data: ptr::null_mut(),
+                row_pitch: 0,
+                _depth_pitch: 0,
+            };
+            let hr = d3d11_context_map(
+                self.d3d11_context,
+                self.staging_texture,
+                0,
+                D3D11_MAP_READ,
+                0,
+                &mut mapped,
+            );
+            if hr != S_OK || mapped.p_data.is_null() {
+                return Err(VideoError::Codec(format!(
+                    "MF DXVA: Map staging failed: {hr:#X}"
+                )));
+            }
+
+            let stride = mapped.row_pitch as usize;
+            if self.stride == 0 {
+                self.stride = mapped.row_pitch;
+            }
+
+            let w = self.width as usize;
+            let h = self.height as usize;
+            let crop_x = self.crop_x as usize;
+            let crop_y = self.crop_y as usize;
+            let coded_h_usize = coded_h as usize;
+
+            let nv12_ptr = mapped.p_data as *const u8;
+            let y_start = nv12_ptr.add(crop_y * stride + crop_x);
+            let uv_start =
+                nv12_ptr.add(stride * coded_h_usize + (crop_y / 2) * stride + (crop_x & !1));
+
+            let mut rgb = vec![0u8; w * h * 3];
+            super::nv12_to_rgb8(y_start, stride, uv_start, stride, w, h, &mut rgb);
+
+            d3d11_context_unmap(self.d3d11_context, self.staging_texture, 0);
+
+            Ok(Some(DecodedFrame {
+                width: w,
+                height: h,
+                rgb8_data: rgb,
+                timestamp_us,
+                keyframe: false,
+                bit_depth: 8,
+                rgb16_data: None,
+            }))
+        }
+
+        unsafe fn extract_software_frame(
+            &mut self,
+            out_sample: *mut c_void,
+            timestamp_us: u64,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
             let mut contig_buf: *mut c_void = ptr::null_mut();
             let hr = sample_convert_to_contiguous_buffer(out_sample, &mut contig_buf);
             if hr != S_OK || contig_buf.is_null() {
@@ -3020,104 +3556,45 @@ pub mod media_foundation {
                 )));
             }
 
-            // Resolve dimensions if not yet known (first frame decoded)
             if self.width == 0 || self.height == 0 {
-                let mut out_type: *mut c_void = ptr::null_mut();
-                if transform_get_output_current_type(self.transform, 0, &mut out_type) == S_OK
-                    && !out_type.is_null()
-                {
-                    let mut frame_size: u64 = 0;
-                    if attributes_get_uint64(out_type, &MF_MT_FRAME_SIZE, &mut frame_size) == S_OK
-                    {
-                        self.width = (frame_size >> 32) as u32;
-                        self.height = frame_size as u32;
-                    }
-                    com_release(out_type);
-                }
+                self.resolve_output_dimensions();
             }
 
             if self.width == 0 || self.height == 0 {
                 media_buffer_unlock(contig_buf);
-                com_release(contig_buf);
-                com_release(out_sample);
-                if !pre_alloc.is_null() && pre_alloc != out_sample {
-                    com_release(pre_alloc);
+                if contig_buf != self.cached_buffer {
+                    com_release(contig_buf);
                 }
                 return Err(VideoError::Codec(
                     "MF: cannot determine output dimensions".into(),
                 ));
             }
 
-            if self.width == 0 || self.height == 0 || self.stride == 0 {
+            if self.stride == 0 {
                 let nv12_total = nv12_len as usize;
-                let mut out_type: *mut c_void = ptr::null_mut();
-                if transform_get_output_current_type(self.transform, 0, &mut out_type) == S_OK
-                    && !out_type.is_null()
-                {
-                    let mut frame_size: u64 = 0;
-                    if attributes_get_uint64(out_type, &MF_MT_FRAME_SIZE, &mut frame_size) == S_OK {
-                        let coded_w = (frame_size >> 32) as u32;
-                        let coded_h = frame_size as u32;
-                        if coded_w > 0 && coded_h > 0 {
-                            let s = if nv12_total == coded_w as usize * coded_h as usize * 3 / 2 {
-                                coded_w
-                            } else {
-                                (nv12_total * 2 / (coded_h as usize * 3)) as u32
-                            };
-                            self.stride = s;
-                            self.width = coded_w;
-                            self.height = coded_h;
-                            self.coded_height = coded_h;
-                            self.crop_x = 0;
-                            self.crop_y = 0;
-
-                            let mut aperture_blob: *mut u8 = ptr::null_mut();
-                            let mut aperture_len: u32 = 0;
-                            if attributes_get_blob(
-                                out_type,
-                                &MF_MT_MINIMUM_DISPLAY_APERTURE,
-                                &mut aperture_blob,
-                                &mut aperture_len,
-                            ) == S_OK
-                                && !aperture_blob.is_null()
-                                && aperture_len >= 16
-                            {
-                                // MFVideoArea: OffsetX{fract:u16, value:i16}, OffsetY{fract:u16, value:i16}, Area{cx:i32, cy:i32}
-                                let offset_x = *(aperture_blob.add(2) as *const i16) as u32;
-                                let offset_y = *(aperture_blob.add(6) as *const i16) as u32;
-                                let display_w =
-                                    *(aperture_blob.add(8) as *const i32) as u32;
-                                let display_h =
-                                    *(aperture_blob.add(12) as *const i32) as u32;
-                                if display_w > 0
-                                    && display_w <= coded_w
-                                    && display_h > 0
-                                    && display_h <= coded_h
-                                {
-                                    self.width = display_w;
-                                    self.height = display_h;
-                                    self.crop_x = offset_x;
-                                    self.crop_y = offset_y;
-                                }
-                                CoTaskMemFree(aperture_blob as *mut c_void);
-                            }
-                        }
-                    }
-                    com_release(out_type);
-                }
-                if self.stride == 0 {
-                    media_buffer_unlock(contig_buf);
-                    if contig_buf != self.cached_buffer {
-                        com_release(contig_buf);
-                    }
-                    return Err(VideoError::Codec(
-                        "MF: cannot determine output dimensions".into(),
-                    ));
-                }
+                let coded_w = self.width;
+                let coded_h = self.height;
+                self.stride =
+                    if nv12_total == coded_w as usize * coded_h as usize * 3 / 2 {
+                        coded_w
+                    } else {
+                        (nv12_total * 2 / (coded_h as usize * 3)) as u32
+                    };
+                self.coded_height = coded_h;
                 eprintln!(
                     "[MF] Resolved: {}x{} stride={} nv12_len={nv12_len}",
                     self.width, self.height, self.stride
                 );
+            }
+
+            if self.stride == 0 {
+                media_buffer_unlock(contig_buf);
+                if contig_buf != self.cached_buffer {
+                    com_release(contig_buf);
+                }
+                return Err(VideoError::Codec(
+                    "MF: cannot determine stride".into(),
+                ));
             }
 
             let w = self.width as usize;
@@ -3131,15 +3608,7 @@ pub mod media_foundation {
             let uv_start = nv12_ptr.add(stride * coded_h + (crop_y / 2) * stride + (crop_x & !1));
 
             let mut rgb = vec![0u8; w * h * 3];
-            super::nv12_to_rgb8(
-                y_start,
-                stride,
-                uv_start,
-                stride,
-                w,
-                h,
-                &mut rgb,
-            );
+            super::nv12_to_rgb8(y_start, stride, uv_start, stride, w, h, &mut rgb);
 
             media_buffer_unlock(contig_buf);
             if contig_buf != self.cached_buffer {
@@ -3155,6 +3624,65 @@ pub mod media_foundation {
                 bit_depth: 8,
                 rgb16_data: None,
             }))
+        }
+
+        unsafe fn resolve_output_dimensions(&mut self) {
+            let mut out_type: *mut c_void = ptr::null_mut();
+            if transform_get_output_current_type(self.transform, 0, &mut out_type) != S_OK
+                || out_type.is_null()
+            {
+                return;
+            }
+            let mut frame_size: u64 = 0;
+            if attributes_get_uint64(out_type, &MF_MT_FRAME_SIZE, &mut frame_size) == S_OK {
+                let coded_w = (frame_size >> 32) as u32;
+                let coded_h = frame_size as u32;
+                if coded_w > 0 && coded_h > 0 {
+                    if self.width == 0 {
+                        self.width = coded_w;
+                    }
+                    if self.height == 0 {
+                        self.height = coded_h;
+                    }
+                    if self.coded_height == 0 {
+                        self.coded_height = coded_h;
+                    }
+
+                    // MFVideoArea aperture crop
+                    let mut aperture_blob: *mut u8 = ptr::null_mut();
+                    let mut aperture_len: u32 = 0;
+                    if attributes_get_blob(
+                        out_type,
+                        &MF_MT_MINIMUM_DISPLAY_APERTURE,
+                        &mut aperture_blob,
+                        &mut aperture_len,
+                    ) == S_OK
+                        && !aperture_blob.is_null()
+                        && aperture_len >= 16
+                    {
+                        let offset_x = *(aperture_blob.add(2) as *const i16) as u32;
+                        let offset_y = *(aperture_blob.add(6) as *const i16) as u32;
+                        let display_w = *(aperture_blob.add(8) as *const i32) as u32;
+                        let display_h = *(aperture_blob.add(12) as *const i32) as u32;
+                        if display_w > 0
+                            && display_w <= coded_w
+                            && display_h > 0
+                            && display_h <= coded_h
+                        {
+                            self.width = display_w;
+                            self.height = display_h;
+                            self.crop_x = offset_x;
+                            self.crop_y = offset_y;
+                        }
+                        CoTaskMemFree(aperture_blob as *mut c_void);
+                    }
+                    eprintln!(
+                        "[MF] Resolved dimensions: {}x{} coded={}x{}",
+                        self.width, self.height, coded_w, coded_h
+                    );
+                }
+            }
+            com_release(out_type);
         }
     }
 
@@ -3203,6 +3731,13 @@ pub mod media_foundation {
             if self.initialized {
                 unsafe {
                     if !self.transform.is_null() {
+                        if self.dxva_enabled {
+                            transform_process_message(
+                                self.transform,
+                                MFT_MESSAGE_SET_D3D_MANAGER,
+                                0,
+                            );
+                        }
                         transform_process_message(
                             self.transform,
                             MFT_MESSAGE_COMMAND_FLUSH,
@@ -3216,6 +3751,18 @@ pub mod media_foundation {
                     if !self.cached_sample.is_null() {
                         com_release(self.cached_sample);
                     }
+                    if !self.staging_texture.is_null() {
+                        com_release(self.staging_texture);
+                    }
+                    if !self.dxgi_manager.is_null() {
+                        com_release(self.dxgi_manager);
+                    }
+                    if !self.d3d11_context.is_null() {
+                        com_release(self.d3d11_context);
+                    }
+                    if !self.d3d11_device.is_null() {
+                        com_release(self.d3d11_device);
+                    }
                     MFShutdown();
                 }
             }
@@ -3223,6 +3770,60 @@ pub mod media_foundation {
     }
 
     unsafe impl Send for MediaFoundationDecoder {}
+
+    pub fn probe_hevc() -> bool {
+        unsafe {
+            let _ = CoInitializeEx(ptr::null_mut(), 0x2);
+            let mut transform: *mut c_void = ptr::null_mut();
+            let hr = CoCreateInstance(
+                &CLSID_CMSHEVCDecoderMFT,
+                ptr::null_mut(),
+                CLSCTX_INPROC_SERVER,
+                &IID_IMF_TRANSFORM,
+                &mut transform,
+            );
+            let available = hr == S_OK && !transform.is_null();
+            if !transform.is_null() {
+                com_release(transform);
+            }
+            available
+        }
+    }
+}
+
+/// Check whether the host can hardware-decode H.265/HEVC via a working backend.
+///
+/// On Windows: probes whether the Media Foundation HEVC decoder MFT can be
+/// instantiated (requires HEVC Video Extensions from Microsoft Store).
+/// On macOS: VideoToolbox always supports HEVC.
+/// On Linux: VA-API implementation is incomplete (missing parameter buffers),
+/// NVDEC is not yet validated. Returns false until a working backend exists.
+#[allow(unreachable_code)]
+pub fn is_hevc_available() -> bool {
+    #[cfg(all(target_os = "windows", feature = "media-foundation"))]
+    {
+        return media_foundation::probe_hevc();
+    }
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    {
+        return true;
+    }
+    false
+}
+
+/// Check whether the host can hardware-decode H.264 via a platform API
+/// (VideoToolbox, Media Foundation, etc. — excludes VA-API which is incomplete).
+#[allow(unreachable_code)]
+pub fn is_h264_hw_available() -> bool {
+    #[cfg(all(target_os = "windows", feature = "media-foundation"))]
+    {
+        return true;
+    }
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    {
+        return true;
+    }
+    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
