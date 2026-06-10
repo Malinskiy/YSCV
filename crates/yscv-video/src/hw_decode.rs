@@ -733,7 +733,16 @@ pub mod videotoolbox {
                 let cr_lo = vget_low_s16(cr_adj);
                 let c_lo = vmull_s16(c298, y_lo);
                 let r_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c409, cr_lo)), half), 8);
-                let g_lo = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_lo, vmull_s16(c208, cr_lo)), vmull_s16(c100, cb_lo)), half), 8);
+                let g_lo = vshrq_n_s32(
+                    vaddq_s32(
+                        vsubq_s32(
+                            vsubq_s32(c_lo, vmull_s16(c208, cr_lo)),
+                            vmull_s16(c100, cb_lo),
+                        ),
+                        half,
+                    ),
+                    8,
+                );
                 let b_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c516, cb_lo)), half), 8);
 
                 // High 4 pixels
@@ -742,7 +751,16 @@ pub mod videotoolbox {
                 let cr_hi = vget_high_s16(cr_adj);
                 let c_hi = vmull_s16(c298, y_hi);
                 let r_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c409, cr_hi)), half), 8);
-                let g_hi = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_hi, vmull_s16(c208, cr_hi)), vmull_s16(c100, cb_hi)), half), 8);
+                let g_hi = vshrq_n_s32(
+                    vaddq_s32(
+                        vsubq_s32(
+                            vsubq_s32(c_hi, vmull_s16(c208, cr_hi)),
+                            vmull_s16(c100, cb_hi),
+                        ),
+                        half,
+                    ),
+                    8,
+                );
                 let b_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c516, cb_hi)), half), 8);
 
                 // Narrow i32 → i16, clamp [0,255], narrow i16 → u8
@@ -929,9 +947,17 @@ pub mod videotoolbox {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
-#[allow(unsafe_code, non_camel_case_types)]
+#[allow(
+    unsafe_code,
+    non_camel_case_types,
+    unsafe_op_in_unsafe_fn,
+    non_snake_case,
+    non_upper_case_globals
+)]
 pub mod vaapi {
     use super::*;
+    use crate::h264_bitstream::BitstreamReader;
+    use crate::h264_params::{Pps, SliceHeader, Sps};
     use std::ffi::c_void;
     use std::ptr;
 
@@ -945,10 +971,29 @@ pub mod vaapi {
     type VAProfile = i32;
     type VAEntrypoint = i32;
 
+    const VA_PROFILE_H264_CONSTRAINED_BASELINE: VAProfile = 13;
+    const VA_PROFILE_H264_MAIN: VAProfile = 6;
     const VA_PROFILE_H264_HIGH: VAProfile = 7;
     const VA_PROFILE_HEVC_MAIN: VAProfile = 12;
     const VA_ENTRYPOINT_VLD: VAEntrypoint = 1;
     const VA_STATUS_SUCCESS: VAStatus = 0;
+    const VA_PADDING_LOW: usize = 4;
+    const VA_PADDING_MEDIUM: usize = 8;
+
+    const VAPictureParameterBufferType: i32 = 0;
+    const VAIQMatrixBufferType: i32 = 1;
+    const VASliceParameterBufferType: i32 = 4;
+    // VASliceDataBufferType = 5 already exists
+
+    const VA_PICTURE_H264_INVALID: u32 = 0x0000_0001;
+    const VA_PICTURE_H264_TOP_FIELD: u32 = 0x0000_0002;
+    const VA_PICTURE_H264_BOTTOM_FIELD: u32 = 0x0000_0004;
+    const VA_PICTURE_H264_SHORT_TERM_REFERENCE: u32 = 0x0000_0008;
+    const VA_PICTURE_H264_LONG_TERM_REFERENCE: u32 = 0x0000_0010;
+
+    const VA_SLICE_DATA_FLAG_ALL: u32 = 0x00;
+
+    const VA_INVALID_ID: u32 = 0xFFFF_FFFF;
 
     /// VA image descriptor returned by vaDeriveImage.
     #[repr(C)]
@@ -965,6 +1010,7 @@ pub mod vaapi {
         num_palette_entries: i32,
         entry_bytes: i32,
         component_order: [i8; 4],
+        va_reserved: [u32; 4],
     }
 
     #[repr(C)]
@@ -977,16 +1023,145 @@ pub mod vaapi {
         green_mask: u32,
         blue_mask: u32,
         alpha_mask: u32,
+        va_reserved: [u32; 4],
     }
 
     const VA_RT_FORMAT_YUV420: u32 = 0x00000001;
     const VASliceDataBufferType: i32 = 5;
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    struct VAPictureH264 {
+        picture_id: VASurfaceID,
+        frame_idx: u32,
+        flags: u32,
+        TopFieldOrderCnt: i32,
+        BottomFieldOrderCnt: i32,
+        va_reserved: [u32; VA_PADDING_LOW],
+    }
+
+    impl Default for VAPictureH264 {
+        fn default() -> Self {
+            Self {
+                picture_id: VA_INVALID_ID,
+                frame_idx: 0,
+                flags: VA_PICTURE_H264_INVALID,
+                TopFieldOrderCnt: 0,
+                BottomFieldOrderCnt: 0,
+                va_reserved: [0; VA_PADDING_LOW],
+            }
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    struct VAPictureParameterBufferH264 {
+        CurrPic: VAPictureH264,
+        ReferenceFrames: [VAPictureH264; 16],
+        picture_width_in_mbs_minus1: u16,
+        picture_height_in_mbs_minus1: u16,
+        bit_depth_luma_minus8: u8,
+        bit_depth_chroma_minus8: u8,
+        num_ref_frames: u8,
+        seq_fields: u32,
+        num_slice_groups_minus1: u8,
+        slice_group_map_type: u8,
+        slice_group_change_rate_minus1: u16,
+        pic_init_qp_minus26: i8,
+        pic_init_qs_minus26: i8,
+        chroma_qp_index_offset: i8,
+        second_chroma_qp_index_offset: i8,
+        pic_fields: u32,
+        frame_num: u16,
+        va_reserved: [u32; VA_PADDING_MEDIUM],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    struct VAIQMatrixBufferH264 {
+        ScalingList4x4: [[u8; 16]; 6],
+        ScalingList8x8: [[u8; 64]; 2],
+        va_reserved: [u32; VA_PADDING_LOW],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    struct VASliceParameterBufferH264 {
+        slice_data_size: u32,
+        slice_data_offset: u32,
+        slice_data_flag: u32,
+        slice_data_bit_offset: u16,
+        first_mb_in_slice: u16,
+        slice_type: u8,
+        direct_spatial_mv_pred_flag: u8,
+        num_ref_idx_l0_active_minus1: u8,
+        num_ref_idx_l1_active_minus1: u8,
+        cabac_init_idc: u8,
+        slice_qp_delta: i8,
+        disable_deblocking_filter_idc: u8,
+        slice_alpha_c0_offset_div2: i8,
+        slice_beta_offset_div2: i8,
+        RefPicList0: [VAPictureH264; 32],
+        RefPicList1: [VAPictureH264; 32],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
+        luma_weight_l0_flag: u8,
+        luma_weight_l0: [i16; 32],
+        luma_offset_l0: [i16; 32],
+        chroma_weight_l0_flag: u8,
+        chroma_weight_l0: [[i16; 2]; 32],
+        chroma_offset_l0: [[i16; 2]; 32],
+        luma_weight_l1_flag: u8,
+        luma_weight_l1: [i16; 32],
+        luma_offset_l1: [i16; 32],
+        chroma_weight_l1_flag: u8,
+        chroma_weight_l1: [[i16; 2]; 32],
+        chroma_offset_l1: [[i16; 2]; 32],
+        va_reserved: [u32; VA_PADDING_LOW],
+    }
+
+    #[inline]
+    fn check_va(status: VAStatus, op: &str) -> Result<(), VideoError> {
+        if status == VA_STATUS_SUCCESS {
+            Ok(())
+        } else {
+            Err(VideoError::Codec(format!("VA-API: {op} failed: {status}")))
+        }
+    }
+
+    fn pack_seq_fields(sps: &Sps) -> u32 {
+        // Bitfield layout matches VAPictureParameterBufferH264.seq_fields.bits
+        (sps.chroma_format_idc & 0x3)          // bits 0-1: chroma_format_idc
+            // bit 2: separate_colour_plane_flag = 0 (not parsed)
+            // bit 3: gaps_in_frame_num_value_allowed_flag = 0 (not parsed)
+            | ((sps.frame_mbs_only_flag as u32) << 4)
+            | ((sps.mb_adaptive_frame_field_flag as u32) << 5)
+            | (1u32 << 6)                       // direct_8x8_inference_flag = 1
+            | (((sps.level_idc >= 31) as u32) << 7) // MinLumaBiPredSize8x8
+            | (((sps.log2_max_frame_num.saturating_sub(4)) & 0xF) << 8)
+            | ((sps.pic_order_cnt_type & 0x3) << 12)
+            | (((sps.log2_max_pic_order_cnt_lsb.saturating_sub(4)) & 0xF) << 14)
+            // bit 18: delta_pic_order_always_zero_flag = 0 (not parsed)
+    }
+
+    fn pack_pic_fields(pps: &Pps, sh: &SliceHeader, nal_ref_idc: u8) -> u32 {
+        // Bitfield layout matches VAPictureParameterBufferH264.pic_fields.bits
+        (pps.entropy_coding_mode_flag as u32)
+            | ((pps.weighted_pred_flag as u32) << 1)
+            | ((pps.weighted_bipred_idc & 0x3) << 2)
+            | ((pps.transform_8x8_mode_flag as u32) << 4)
+            | ((sh.field_pic_flag as u32) << 5)
+            // bit 6: constrained_intra_pred_flag = 0 (not parsed)
+            // bit 7: pic_order_present_flag = 0 (not parsed)
+            | ((pps.deblocking_filter_control_present_flag as u32) << 8)
+            // bit 9: redundant_pic_cnt_present_flag = 0
+            | (((nal_ref_idc != 0) as u32) << 10)
+    }
+
     /// Dynamically-loaded libva function pointers.
     struct VaLib {
         _lib: libloading::Library,
-        va_initialize:
-            unsafe extern "C" fn(VADisplay, *mut i32, *mut i32) -> VAStatus,
+        va_initialize: unsafe extern "C" fn(VADisplay, *mut i32, *mut i32) -> VAStatus,
         va_terminate: unsafe extern "C" fn(VADisplay) -> VAStatus,
         va_create_config: unsafe extern "C" fn(
             VADisplay,
@@ -1016,8 +1191,7 @@ pub mod vaapi {
             i32,
             *mut VAContextID,
         ) -> VAStatus,
-        va_begin_picture:
-            unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus,
+        va_begin_picture: unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus,
         va_create_buffer: unsafe extern "C" fn(
             VADisplay,
             VAContextID,
@@ -1027,32 +1201,18 @@ pub mod vaapi {
             *const c_void,
             *mut VABufferID,
         ) -> VAStatus,
-        va_render_picture: unsafe extern "C" fn(
-            VADisplay,
-            VAContextID,
-            *mut VABufferID,
-            i32,
-        ) -> VAStatus,
-        va_end_picture:
-            unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus,
-        va_sync_surface:
-            unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus,
-        va_derive_image:
-            unsafe extern "C" fn(VADisplay, VASurfaceID, *mut VAImage) -> VAStatus,
-        va_map_buffer:
-            unsafe extern "C" fn(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus,
-        va_unmap_buffer:
-            unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus,
-        va_destroy_image:
-            unsafe extern "C" fn(VADisplay, u32) -> VAStatus,
-        va_destroy_buffer:
-            unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus,
-        va_destroy_surfaces:
-            unsafe extern "C" fn(VADisplay, *mut VASurfaceID, i32) -> VAStatus,
-        va_destroy_config:
-            unsafe extern "C" fn(VADisplay, VAConfigID) -> VAStatus,
-        va_destroy_context:
-            unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus,
+        va_render_picture:
+            unsafe extern "C" fn(VADisplay, VAContextID, *mut VABufferID, i32) -> VAStatus,
+        va_end_picture: unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus,
+        va_sync_surface: unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus,
+        va_derive_image: unsafe extern "C" fn(VADisplay, VASurfaceID, *mut VAImage) -> VAStatus,
+        va_map_buffer: unsafe extern "C" fn(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus,
+        va_unmap_buffer: unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus,
+        va_destroy_image: unsafe extern "C" fn(VADisplay, u32) -> VAStatus,
+        va_destroy_buffer: unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus,
+        va_destroy_surfaces: unsafe extern "C" fn(VADisplay, *mut VASurfaceID, i32) -> VAStatus,
+        va_destroy_config: unsafe extern "C" fn(VADisplay, VAConfigID) -> VAStatus,
+        va_destroy_context: unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus,
     }
 
     impl VaLib {
@@ -1070,19 +1230,38 @@ pub mod vaapi {
                     .get::<unsafe extern "C" fn(VADisplay) -> VAStatus>(b"vaTerminate\0")
                     .ok()?;
                 let va_create_config = *lib
-                    .get::<unsafe extern "C" fn(VADisplay, VAProfile, VAEntrypoint, *const c_void, i32, *mut VAConfigID) -> VAStatus>(
-                        b"vaCreateConfig\0",
-                    )
+                    .get::<unsafe extern "C" fn(
+                        VADisplay,
+                        VAProfile,
+                        VAEntrypoint,
+                        *const c_void,
+                        i32,
+                        *mut VAConfigID,
+                    ) -> VAStatus>(b"vaCreateConfig\0")
                     .ok()?;
                 let va_create_surfaces = *lib
-                    .get::<unsafe extern "C" fn(VADisplay, u32, u32, u32, *mut VASurfaceID, u32, *const c_void, u32) -> VAStatus>(
-                        b"vaCreateSurfaces\0",
-                    )
+                    .get::<unsafe extern "C" fn(
+                        VADisplay,
+                        u32,
+                        u32,
+                        u32,
+                        *mut VASurfaceID,
+                        u32,
+                        *const c_void,
+                        u32,
+                    ) -> VAStatus>(b"vaCreateSurfaces\0")
                     .ok()?;
                 let va_create_context = *lib
-                    .get::<unsafe extern "C" fn(VADisplay, VAConfigID, i32, i32, i32, *mut VASurfaceID, i32, *mut VAContextID) -> VAStatus>(
-                        b"vaCreateContext\0",
-                    )
+                    .get::<unsafe extern "C" fn(
+                        VADisplay,
+                        VAConfigID,
+                        i32,
+                        i32,
+                        i32,
+                        *mut VASurfaceID,
+                        i32,
+                        *mut VAContextID,
+                    ) -> VAStatus>(b"vaCreateContext\0")
                     .ok()?;
                 let va_begin_picture = *lib
                     .get::<unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus>(
@@ -1090,15 +1269,24 @@ pub mod vaapi {
                     )
                     .ok()?;
                 let va_create_buffer = *lib
-                    .get::<unsafe extern "C" fn(VADisplay, VAContextID, i32, u32, u32, *const c_void, *mut VABufferID) -> VAStatus>(
-                        b"vaCreateBuffer\0",
-                    )
+                    .get::<unsafe extern "C" fn(
+                        VADisplay,
+                        VAContextID,
+                        i32,
+                        u32,
+                        u32,
+                        *const c_void,
+                        *mut VABufferID,
+                    ) -> VAStatus>(b"vaCreateBuffer\0")
                     .ok()?;
-                let va_render_picture = *lib
-                    .get::<unsafe extern "C" fn(VADisplay, VAContextID, *mut VABufferID, i32) -> VAStatus>(
-                        b"vaRenderPicture\0",
-                    )
-                    .ok()?;
+                let va_render_picture =
+                    *lib.get::<unsafe extern "C" fn(
+                        VADisplay,
+                        VAContextID,
+                        *mut VABufferID,
+                        i32,
+                    ) -> VAStatus>(b"vaRenderPicture\0")
+                        .ok()?;
                 let va_end_picture = *lib
                     .get::<unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus>(
                         b"vaEndPicture\0",
@@ -1125,9 +1313,7 @@ pub mod vaapi {
                     )
                     .ok()?;
                 let va_destroy_image = *lib
-                    .get::<unsafe extern "C" fn(VADisplay, u32) -> VAStatus>(
-                        b"vaDestroyImage\0",
-                    )
+                    .get::<unsafe extern "C" fn(VADisplay, u32) -> VAStatus>(b"vaDestroyImage\0")
                     .ok()?;
                 let va_destroy_buffer = *lib
                     .get::<unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus>(
@@ -1183,19 +1369,233 @@ pub mod vaapi {
     impl VaDrmLib {
         fn load() -> Option<Self> {
             // SAFETY: libva-drm.so.2 is a well-known system library.
-            let lib =
-                unsafe { libloading::Library::new("libva-drm.so.2") }.ok()?;
+            let lib = unsafe { libloading::Library::new("libva-drm.so.2") }.ok()?;
             // SAFETY: symbol signature matches the libva-drm C ABI.
             unsafe {
                 let va_get_display_drm = *lib
-                    .get::<unsafe extern "C" fn(i32) -> VADisplay>(
-                        b"vaGetDisplayDRM\0",
-                    )
+                    .get::<unsafe extern "C" fn(i32) -> VADisplay>(b"vaGetDisplayDRM\0")
                     .ok()?;
                 Some(Self {
                     _lib: lib,
                     va_get_display_drm,
                 })
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct DpbEntry {
+        surface_idx: usize,
+        frame_num: u32,
+        top_poc: i32,
+        bottom_poc: i32,
+        is_long_term: bool,
+        is_reference: bool,
+    }
+
+    #[derive(Debug)]
+    struct Dpb {
+        entries: Vec<DpbEntry>,
+        max_size: usize,
+        poc_counter: i32,
+        prev_poc_lsb: u32,
+        prev_poc_msb: i32,
+    }
+
+    impl Dpb {
+        fn new(max_size: usize) -> Self {
+            Self {
+                entries: Vec::new(),
+                max_size,
+                poc_counter: 0,
+                prev_poc_lsb: 0,
+                prev_poc_msb: 0,
+            }
+        }
+
+        fn clear(&mut self) -> Vec<usize> {
+            let released = self.entries.iter().map(|e| e.surface_idx).collect();
+            self.entries.clear();
+            self.poc_counter = 0;
+            self.prev_poc_lsb = 0;
+            self.prev_poc_msb = 0;
+            released
+        }
+
+        fn add_reference(
+            &mut self,
+            surface_idx: usize,
+            frame_num: u32,
+            top_poc: i32,
+            bottom_poc: i32,
+        ) {
+            self.entries.push(DpbEntry {
+                surface_idx,
+                frame_num,
+                top_poc,
+                bottom_poc,
+                is_long_term: false,
+                is_reference: true,
+            });
+        }
+
+        fn sliding_window_evict(&mut self, surface_in_use: &mut [bool]) {
+            if self.entries.len() < self.max_size {
+                return;
+            }
+            if let Some((idx, _)) = self
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| entry.is_reference && !entry.is_long_term)
+            {
+                let removed = self.entries.remove(idx);
+                if removed.surface_idx < surface_in_use.len() {
+                    surface_in_use[removed.surface_idx] = false;
+                }
+                return;
+            }
+            if let Some(removed) = self.entries.first().copied() {
+                self.entries.remove(0);
+                if removed.surface_idx < surface_in_use.len() {
+                    surface_in_use[removed.surface_idx] = false;
+                }
+            }
+        }
+
+        fn to_va_picture(entry: &DpbEntry, surfaces: &[VASurfaceID]) -> VAPictureH264 {
+            let mut flags = if entry.is_long_term {
+                VA_PICTURE_H264_LONG_TERM_REFERENCE
+            } else {
+                VA_PICTURE_H264_SHORT_TERM_REFERENCE
+            };
+            if entry.top_poc != entry.bottom_poc {
+                flags |= VA_PICTURE_H264_TOP_FIELD | VA_PICTURE_H264_BOTTOM_FIELD;
+            }
+            VAPictureH264 {
+                picture_id: surfaces[entry.surface_idx],
+                frame_idx: entry.frame_num,
+                flags,
+                TopFieldOrderCnt: entry.top_poc,
+                BottomFieldOrderCnt: entry.bottom_poc,
+                va_reserved: [0; VA_PADDING_LOW],
+            }
+        }
+
+        fn build_va_reference_frames(&self, surfaces: &[VASurfaceID]) -> [VAPictureH264; 16] {
+            let mut out = [VAPictureH264::default(); 16];
+            for (i, entry) in self
+                .entries
+                .iter()
+                .filter(|e| e.is_reference)
+                .take(16)
+                .enumerate()
+            {
+                out[i] = Self::to_va_picture(entry, surfaces);
+            }
+            out
+        }
+
+        fn build_ref_pic_list0(
+            &self,
+            surfaces: &[VASurfaceID],
+            slice_type: u32,
+            current_poc: i32,
+        ) -> [VAPictureH264; 32] {
+            let mut out = [VAPictureH264::default(); 32];
+            let normalized = slice_type % 5;
+            let mut refs: Vec<DpbEntry> = self
+                .entries
+                .iter()
+                .copied()
+                .filter(|e| e.is_reference)
+                .collect();
+
+            if normalized == 1 {
+                let mut le: Vec<DpbEntry> = refs
+                    .iter()
+                    .copied()
+                    .filter(|e| !e.is_long_term && e.top_poc <= current_poc)
+                    .collect();
+                let mut gt: Vec<DpbEntry> = refs
+                    .iter()
+                    .copied()
+                    .filter(|e| !e.is_long_term && e.top_poc > current_poc)
+                    .collect();
+                let mut lt: Vec<DpbEntry> =
+                    refs.iter().copied().filter(|e| e.is_long_term).collect();
+                le.sort_by(|a, b| b.top_poc.cmp(&a.top_poc));
+                gt.sort_by(|a, b| a.top_poc.cmp(&b.top_poc));
+                lt.sort_by(|a, b| a.frame_num.cmp(&b.frame_num));
+                refs.clear();
+                refs.extend(le);
+                refs.extend(gt);
+                refs.extend(lt);
+            } else {
+                let mut st: Vec<DpbEntry> =
+                    refs.iter().copied().filter(|e| !e.is_long_term).collect();
+                let mut lt: Vec<DpbEntry> =
+                    refs.iter().copied().filter(|e| e.is_long_term).collect();
+                st.sort_by(|a, b| b.frame_num.cmp(&a.frame_num));
+                lt.sort_by(|a, b| a.frame_num.cmp(&b.frame_num));
+                refs.clear();
+                refs.extend(st);
+                refs.extend(lt);
+            }
+
+            for (i, entry) in refs.iter().take(32).enumerate() {
+                out[i] = Self::to_va_picture(entry, surfaces);
+            }
+            out
+        }
+
+        fn build_ref_pic_list1(
+            &self,
+            surfaces: &[VASurfaceID],
+            slice_type: u32,
+            current_poc: i32,
+        ) -> [VAPictureH264; 32] {
+            let normalized = slice_type % 5;
+            if normalized != 1 {
+                return [VAPictureH264::default(); 32];
+            }
+            let mut list = self.build_ref_pic_list0(surfaces, slice_type, current_poc);
+            list.reverse();
+            list
+        }
+
+        fn compute_poc(&mut self, sps: &Sps, sh: &SliceHeader, is_idr: bool) -> (i32, i32) {
+            if sps.pic_order_cnt_type == 0 {
+                let max_poc_lsb = 1u32 << sps.log2_max_pic_order_cnt_lsb.min(30);
+                let poc_msb = if is_idr {
+                    0
+                } else if sh.pic_order_cnt_lsb < self.prev_poc_lsb
+                    && (self.prev_poc_lsb - sh.pic_order_cnt_lsb) >= (max_poc_lsb / 2)
+                {
+                    self.prev_poc_msb + max_poc_lsb as i32
+                } else if sh.pic_order_cnt_lsb > self.prev_poc_lsb
+                    && (sh.pic_order_cnt_lsb - self.prev_poc_lsb) > (max_poc_lsb / 2)
+                {
+                    self.prev_poc_msb - max_poc_lsb as i32
+                } else {
+                    self.prev_poc_msb
+                };
+                let top = poc_msb + sh.pic_order_cnt_lsb as i32;
+                let bottom = if sh.field_pic_flag {
+                    top
+                } else {
+                    top + sh.delta_pic_order_cnt_bottom
+                };
+                self.prev_poc_msb = poc_msb;
+                self.prev_poc_lsb = sh.pic_order_cnt_lsb;
+                (top, bottom)
+            } else {
+                if is_idr {
+                    self.poc_counter = 0;
+                }
+                let top = self.poc_counter;
+                self.poc_counter = self.poc_counter.saturating_add(2);
+                (top, top)
             }
         }
     }
@@ -1215,6 +1615,13 @@ pub mod vaapi {
         va: Option<VaLib>,
         #[allow(dead_code)]
         va_drm: Option<VaDrmLib>,
+        sps: Option<Sps>,
+        pps: Option<Pps>,
+        dpb: Dpb,
+        surface_in_use: Vec<bool>,
+        current_surface_idx: usize,
+        frame_counter: u64,
+        h264_profile: VAProfile,
     }
 
     impl VaapiDecoder {
@@ -1243,8 +1650,7 @@ pub mod vaapi {
                 let display = (va_drm.va_get_display_drm)(fd);
                 let mut major = 0i32;
                 let mut minor = 0i32;
-                let status =
-                    (va.va_initialize)(display, &mut major, &mut minor);
+                let status = (va.va_initialize)(display, &mut major, &mut minor);
                 if status != VA_STATUS_SUCCESS {
                     return Self::with_sw_fallback(codec);
                 }
@@ -1252,11 +1658,7 @@ pub mod vaapi {
                 let profile = match codec {
                     VideoCodec::H264 => VA_PROFILE_H264_HIGH,
                     VideoCodec::H265 => VA_PROFILE_HEVC_MAIN,
-                    _ => {
-                        return Err(VideoError::Codec(
-                            "Unsupported codec".into(),
-                        ))
-                    }
+                    _ => return Err(VideoError::Codec("Unsupported codec".into())),
                 };
 
                 let mut config_id: VAConfigID = 0;
@@ -1286,23 +1688,22 @@ pub mod vaapi {
                     sw_fallback: None,
                     va: Some(va),
                     va_drm: Some(va_drm),
+                    sps: None,
+                    pps: None,
+                    dpb: Dpb::new(16),
+                    surface_in_use: Vec::new(),
+                    current_surface_idx: 0,
+                    frame_counter: 0,
+                    h264_profile: profile,
                 })
             }
         }
 
         fn with_sw_fallback(codec: VideoCodec) -> Result<Self, VideoError> {
             let sw: Box<dyn VideoDecoder> = match codec {
-                VideoCodec::H264 => {
-                    Box::new(super::super::h264_decoder::H264Decoder::new())
-                }
-                VideoCodec::H265 => {
-                    Box::new(super::super::hevc_decoder::HevcDecoder::new())
-                }
-                _ => {
-                    return Err(VideoError::Codec(
-                        "Unsupported codec".into(),
-                    ))
-                }
+                VideoCodec::H264 => Box::new(super::super::h264_decoder::H264Decoder::new()),
+                VideoCodec::H265 => Box::new(super::super::hevc_decoder::HevcDecoder::new()),
+                _ => return Err(VideoError::Codec("Unsupported codec".into())),
             };
             Ok(VaapiDecoder {
                 codec,
@@ -1317,20 +1718,28 @@ pub mod vaapi {
                 sw_fallback: Some(sw),
                 va: None,
                 va_drm: None,
+                sps: None,
+                pps: None,
+                dpb: Dpb::new(16),
+                surface_in_use: Vec::new(),
+                current_surface_idx: 0,
+                frame_counter: 0,
+                h264_profile: VA_PROFILE_H264_HIGH,
             })
         }
 
         /// Create surfaces and context for the given resolution.
-        unsafe fn create_surfaces(
-            &mut self,
-            width: u32,
-            height: u32,
-        ) -> Result<(), VideoError> {
+        unsafe fn create_surfaces(&mut self, width: u32, height: u32) -> Result<(), VideoError> {
             let va = self.va.as_ref().unwrap();
             self.width = width;
             self.height = height;
-            let num_surfaces: u32 = 4;
+            let num_surfaces: u32 = if let Some(ref sps) = self.sps {
+                sps.max_num_ref_frames.min(16).saturating_add(2)
+            } else {
+                4
+            };
             self.surfaces = vec![0u32; num_surfaces as usize];
+            self.surface_in_use = vec![false; num_surfaces as usize];
             let status = (va.va_create_surfaces)(
                 self.display,
                 VA_RT_FORMAT_YUV420,
@@ -1364,93 +1773,86 @@ pub mod vaapi {
             }
             self.context = ctx;
             self.surfaces_created = true;
+            self.current_surface_idx = 0;
             Ok(())
         }
 
-        /// Decode a single slice using the full VA-API pipeline.
-        unsafe fn decode_slice(
-            &mut self,
-            slice_data: &[u8],
-            surface_idx: usize,
-        ) -> Result<Option<DecodedFrame>, VideoError> {
+        unsafe fn destroy_surfaces_and_context(&mut self) {
             let va = self.va.as_ref().unwrap();
-            let surface = self.surfaces[surface_idx % self.surfaces.len()];
-
-            let status =
-                (va.va_begin_picture)(self.display, self.context, surface);
-            if status != VA_STATUS_SUCCESS {
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaBeginPicture failed: {status}"
-                )));
+            if self.context != 0 {
+                (va.va_destroy_context)(self.display, self.context);
+                self.context = 0;
             }
-
-            let mut slice_buf: VABufferID = 0;
-            let status = (va.va_create_buffer)(
-                self.display,
-                self.context,
-                VASliceDataBufferType,
-                slice_data.len() as u32,
-                1,
-                slice_data.as_ptr() as *const c_void,
-                &mut slice_buf,
-            );
-            if status != VA_STATUS_SUCCESS {
-                (va.va_end_picture)(self.display, self.context);
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaCreateBuffer(SliceData) failed: {status}"
-                )));
+            if !self.surfaces.is_empty() {
+                (va.va_destroy_surfaces)(
+                    self.display,
+                    self.surfaces.as_mut_ptr(),
+                    self.surfaces.len() as i32,
+                );
+                self.surfaces.clear();
             }
+            self.surface_in_use.clear();
+            self.surfaces_created = false;
+        }
 
-            let status = (va.va_render_picture)(
-                self.display,
-                self.context,
-                &mut slice_buf,
-                1,
-            );
-            if status != VA_STATUS_SUCCESS {
-                (va.va_destroy_buffer)(self.display, slice_buf);
-                (va.va_end_picture)(self.display, self.context);
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaRenderPicture failed: {status}"
-                )));
+        fn select_h264_profile(profile_idc: u8) -> VAProfile {
+            match profile_idc {
+                66 => VA_PROFILE_H264_CONSTRAINED_BASELINE,
+                77 => VA_PROFILE_H264_MAIN,
+                100 => VA_PROFILE_H264_HIGH,
+                _ => VA_PROFILE_H264_HIGH,
             }
+        }
 
-            let status =
-                (va.va_end_picture)(self.display, self.context);
-            if status != VA_STATUS_SUCCESS {
-                (va.va_destroy_buffer)(self.display, slice_buf);
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaEndPicture failed: {status}"
-                )));
+        unsafe fn recreate_config(&mut self, profile: VAProfile) -> Result<(), VideoError> {
+            let va = self.va.as_ref().unwrap();
+            if self.config != 0 {
+                (va.va_destroy_config)(self.display, self.config);
+                self.config = 0;
             }
+            let mut config_id: VAConfigID = 0;
+            check_va(
+                (va.va_create_config)(
+                    self.display,
+                    profile,
+                    VA_ENTRYPOINT_VLD,
+                    ptr::null(),
+                    0,
+                    &mut config_id,
+                ),
+                "vaCreateConfig",
+            )?;
+            self.config = config_id;
+            self.h264_profile = profile;
+            Ok(())
+        }
 
-            let status = (va.va_sync_surface)(self.display, surface);
-            if status != VA_STATUS_SUCCESS {
-                (va.va_destroy_buffer)(self.display, slice_buf);
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaSyncSurface failed: {status}"
-                )));
-            }
+        fn find_free_surface(&self) -> Option<usize> {
+            self.surface_in_use.iter().position(|&in_use| !in_use)
+        }
+
+        unsafe fn readback_surface(
+            &self,
+            surface: VASurfaceID,
+            timestamp_us: u64,
+            keyframe: bool,
+        ) -> Result<DecodedFrame, VideoError> {
+            let va = self.va.as_ref().unwrap();
+            check_va((va.va_sync_surface)(self.display, surface), "vaSyncSurface")?;
 
             let mut image: VAImage = std::mem::zeroed();
-            let status =
-                (va.va_derive_image)(self.display, surface, &mut image);
-            if status != VA_STATUS_SUCCESS {
-                (va.va_destroy_buffer)(self.display, slice_buf);
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaDeriveImage failed: {status}"
-                )));
-            }
+            check_va(
+                (va.va_derive_image)(self.display, surface, &mut image),
+                "vaDeriveImage",
+            )?;
 
             let mut buf_ptr: *mut c_void = ptr::null_mut();
-            let status =
-                (va.va_map_buffer)(self.display, image.buf, &mut buf_ptr);
-            if status != VA_STATUS_SUCCESS {
+            if let Err(e) = check_va(
+                (va.va_map_buffer)(self.display, image.buf, &mut buf_ptr),
+                "vaMapBuffer",
+            ) {
                 (va.va_destroy_image)(self.display, image.image_id);
-                (va.va_destroy_buffer)(self.display, slice_buf);
-                return Err(VideoError::Codec(format!(
-                    "VA-API: vaMapBuffer failed: {status}"
-                )));
+                return Err(e);
             }
 
             let w = image.width as usize;
@@ -1472,17 +1874,336 @@ pub mod vaapi {
 
             (va.va_unmap_buffer)(self.display, image.buf);
             (va.va_destroy_image)(self.display, image.image_id);
-            (va.va_destroy_buffer)(self.display, slice_buf);
 
-            Ok(Some(DecodedFrame {
+            Ok(DecodedFrame {
                 width: w,
                 height: h,
                 rgb8_data: rgb,
-                timestamp_us: 0,
-                keyframe: false,
+                timestamp_us,
+                keyframe,
                 bit_depth: 8,
                 rgb16_data: None,
-            }))
+            })
+        }
+
+        unsafe fn decode_legacy_slice(
+            &mut self,
+            slice_data: &[u8],
+            surface_idx: usize,
+            timestamp_us: u64,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
+            let va = self.va.as_ref().unwrap();
+            let surface = self.surfaces[surface_idx % self.surfaces.len()];
+
+            check_va(
+                (va.va_begin_picture)(self.display, self.context, surface),
+                "vaBeginPicture",
+            )?;
+
+            let mut slice_buf: VABufferID = 0;
+            if let Err(e) = check_va(
+                (va.va_create_buffer)(
+                    self.display,
+                    self.context,
+                    VASliceDataBufferType,
+                    slice_data.len() as u32,
+                    1,
+                    slice_data.as_ptr() as *const c_void,
+                    &mut slice_buf,
+                ),
+                "vaCreateBuffer(SliceData)",
+            ) {
+                (va.va_end_picture)(self.display, self.context);
+                return Err(e);
+            }
+
+            let mut slice_bufs = [slice_buf];
+            if let Err(e) = check_va(
+                (va.va_render_picture)(self.display, self.context, slice_bufs.as_mut_ptr(), 1),
+                "vaRenderPicture",
+            ) {
+                (va.va_destroy_buffer)(self.display, slice_buf);
+                (va.va_end_picture)(self.display, self.context);
+                return Err(e);
+            }
+
+            if let Err(e) = check_va(
+                (va.va_end_picture)(self.display, self.context),
+                "vaEndPicture",
+            ) {
+                (va.va_destroy_buffer)(self.display, slice_buf);
+                return Err(e);
+            }
+            let frame = self.readback_surface(surface, timestamp_us, false)?;
+            (va.va_destroy_buffer)(self.display, slice_buf);
+            Ok(Some(frame))
+        }
+
+        unsafe fn decode_picture(
+            &mut self,
+            slice_nals: &[&crate::NalUnit],
+            timestamp_us: u64,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
+            let sps = self
+                .sps
+                .as_ref()
+                .ok_or_else(|| VideoError::Codec("no SPS".into()))?;
+            let pps = self
+                .pps
+                .as_ref()
+                .ok_or_else(|| VideoError::Codec("no PPS".into()))?;
+
+            let mut surface_idx = self.find_free_surface();
+            if surface_idx.is_none() {
+                self.dpb.sliding_window_evict(&mut self.surface_in_use);
+                surface_idx = self.find_free_surface();
+            }
+            let surf_idx =
+                surface_idx.ok_or_else(|| VideoError::Codec("no free surface".into()))?;
+            let surface = self.surfaces[surf_idx];
+            self.surface_in_use[surf_idx] = true;
+
+            let first_nal = slice_nals[0];
+            let nal_ref_idc = (first_nal.data[0] >> 5) & 0x3;
+            let nal_type = first_nal.data[0] & 0x1F;
+            let is_idr = nal_type == 5;
+
+            let first_rbsp = crate::h264_params::remove_emulation_prevention(&first_nal.data[1..]);
+            let mut first_reader = BitstreamReader::new(&first_rbsp);
+            let first_sh =
+                crate::h264_params::parse_slice_header(&mut first_reader, sps, pps, is_idr)?;
+
+            if is_idr {
+                for idx in self.dpb.clear() {
+                    if idx < self.surface_in_use.len() {
+                        self.surface_in_use[idx] = false;
+                    }
+                }
+                self.surface_in_use[surf_idx] = true;
+            }
+
+            let (top_poc, bottom_poc) = self.dpb.compute_poc(sps, &first_sh, is_idr);
+
+            let mut pic_param: VAPictureParameterBufferH264 = std::mem::zeroed();
+            pic_param.CurrPic = VAPictureH264 {
+                picture_id: surface,
+                frame_idx: first_sh.frame_num,
+                flags: 0,
+                TopFieldOrderCnt: top_poc,
+                BottomFieldOrderCnt: bottom_poc,
+                va_reserved: [0; VA_PADDING_LOW],
+            };
+            pic_param.ReferenceFrames = self.dpb.build_va_reference_frames(&self.surfaces);
+            pic_param.picture_width_in_mbs_minus1 = (sps.pic_width_in_mbs.saturating_sub(1)) as u16;
+            let pic_height_in_mbs = if sps.frame_mbs_only_flag {
+                sps.pic_height_in_map_units
+            } else {
+                sps.pic_height_in_map_units.saturating_mul(2)
+            };
+            pic_param.picture_height_in_mbs_minus1 = pic_height_in_mbs.saturating_sub(1) as u16;
+            pic_param.bit_depth_luma_minus8 = sps.bit_depth_luma.saturating_sub(8) as u8;
+            pic_param.bit_depth_chroma_minus8 = sps.bit_depth_chroma.saturating_sub(8) as u8;
+            pic_param.num_ref_frames = sps.max_num_ref_frames.min(16) as u8;
+            pic_param.seq_fields = pack_seq_fields(sps);
+            pic_param.pic_init_qp_minus26 = (pps.pic_init_qp - 26) as i8;
+            pic_param.pic_fields = pack_pic_fields(pps, &first_sh, nal_ref_idc);
+            pic_param.frame_num = first_sh.frame_num as u16;
+
+            let mut iq_matrix: VAIQMatrixBufferH264 = std::mem::zeroed();
+            for i in 0..6 {
+                for j in 0..16 {
+                    iq_matrix.ScalingList4x4[i][j] = sps.scaling_list_4x4[i][j] as u8;
+                }
+            }
+            for j in 0..64 {
+                iq_matrix.ScalingList8x8[0][j] = sps.scaling_list_8x8[0][j] as u8;
+                iq_matrix.ScalingList8x8[1][j] = sps.scaling_list_8x8[3][j] as u8;
+            }
+
+            let va = self.va.as_ref().unwrap();
+            let mut created_buffers: Vec<VABufferID> = Vec::new();
+            let mut picture_started = false;
+
+            let result = (|| -> Result<DecodedFrame, VideoError> {
+                let mut pic_param_buf: VABufferID = 0;
+                check_va(
+                    (va.va_create_buffer)(
+                        self.display,
+                        self.context,
+                        VAPictureParameterBufferType,
+                        std::mem::size_of::<VAPictureParameterBufferH264>() as u32,
+                        1,
+                        &pic_param as *const _ as *const c_void,
+                        &mut pic_param_buf,
+                    ),
+                    "vaCreateBuffer(PictureParameter)",
+                )?;
+                created_buffers.push(pic_param_buf);
+
+                let mut iq_buf: VABufferID = 0;
+                check_va(
+                    (va.va_create_buffer)(
+                        self.display,
+                        self.context,
+                        VAIQMatrixBufferType,
+                        std::mem::size_of::<VAIQMatrixBufferH264>() as u32,
+                        1,
+                        &iq_matrix as *const _ as *const c_void,
+                        &mut iq_buf,
+                    ),
+                    "vaCreateBuffer(IQMatrix)",
+                )?;
+                created_buffers.push(iq_buf);
+
+                check_va(
+                    (va.va_begin_picture)(self.display, self.context, surface),
+                    "vaBeginPicture",
+                )?;
+                picture_started = true;
+
+                let mut param_bufs = [pic_param_buf, iq_buf];
+                check_va(
+                    (va.va_render_picture)(self.display, self.context, param_bufs.as_mut_ptr(), 2),
+                    "vaRenderPicture(params)",
+                )?;
+
+                for slice_nal in slice_nals {
+                    let rbsp =
+                        crate::h264_params::remove_emulation_prevention(&slice_nal.data[1..]);
+                    let mut reader = BitstreamReader::new(&rbsp);
+                    let sh = crate::h264_params::parse_slice_header(&mut reader, sps, pps, is_idr)?;
+
+                    let mut sp: VASliceParameterBufferH264 = std::mem::zeroed();
+                    sp.RefPicList0 =
+                        self.dpb
+                            .build_ref_pic_list0(&self.surfaces, sh.slice_type, top_poc);
+                    sp.RefPicList1 =
+                        self.dpb
+                            .build_ref_pic_list1(&self.surfaces, sh.slice_type, top_poc);
+                    sp.slice_data_size = slice_nal.data.len() as u32;
+                    sp.slice_data_offset = 0;
+                    sp.slice_data_flag = VA_SLICE_DATA_FLAG_ALL;
+                    sp.slice_data_bit_offset = sh.header_bit_len as u16;
+                    sp.first_mb_in_slice = sh.first_mb_in_slice as u16;
+                    sp.slice_type = (sh.slice_type % 5) as u8;
+                    sp.direct_spatial_mv_pred_flag = u8::from(sh.direct_spatial_mv_pred_flag);
+                    sp.num_ref_idx_l0_active_minus1 = sh.num_ref_idx_l0_active_minus1 as u8;
+                    sp.num_ref_idx_l1_active_minus1 = sh.num_ref_idx_l1_active_minus1 as u8;
+                    sp.cabac_init_idc = sh.cabac_init_idc as u8;
+                    sp.slice_qp_delta = sh.slice_qp_delta as i8;
+                    sp.disable_deblocking_filter_idc = sh.disable_deblocking_filter_idc as u8;
+                    sp.slice_alpha_c0_offset_div2 = sh.slice_alpha_c0_offset_div2 as i8;
+                    sp.slice_beta_offset_div2 = sh.slice_beta_offset_div2 as i8;
+
+                    if let Some(ref wt) = sh.weight_table {
+                        sp.luma_log2_weight_denom = wt.luma_log2_denom as u8;
+                        sp.chroma_log2_weight_denom = wt.chroma_log2_denom as u8;
+                        if !wt.luma_l0.is_empty() {
+                            sp.luma_weight_l0_flag = 1;
+                            for (i, w) in wt.luma_l0.iter().take(32).enumerate() {
+                                sp.luma_weight_l0[i] = w.weight as i16;
+                                sp.luma_offset_l0[i] = w.offset as i16;
+                            }
+                        }
+                        if !wt.chroma_l0.is_empty() {
+                            sp.chroma_weight_l0_flag = 1;
+                            for (i, cw) in wt.chroma_l0.iter().take(32).enumerate() {
+                                sp.chroma_weight_l0[i] = [cw[0].weight as i16, cw[1].weight as i16];
+                                sp.chroma_offset_l0[i] = [cw[0].offset as i16, cw[1].offset as i16];
+                            }
+                        }
+                        if !wt.luma_l1.is_empty() {
+                            sp.luma_weight_l1_flag = 1;
+                            for (i, w) in wt.luma_l1.iter().take(32).enumerate() {
+                                sp.luma_weight_l1[i] = w.weight as i16;
+                                sp.luma_offset_l1[i] = w.offset as i16;
+                            }
+                        }
+                        if !wt.chroma_l1.is_empty() {
+                            sp.chroma_weight_l1_flag = 1;
+                            for (i, cw) in wt.chroma_l1.iter().take(32).enumerate() {
+                                sp.chroma_weight_l1[i] = [cw[0].weight as i16, cw[1].weight as i16];
+                                sp.chroma_offset_l1[i] = [cw[0].offset as i16, cw[1].offset as i16];
+                            }
+                        }
+                    }
+
+                    let mut sp_buf: VABufferID = 0;
+                    check_va(
+                        (va.va_create_buffer)(
+                            self.display,
+                            self.context,
+                            VASliceParameterBufferType,
+                            std::mem::size_of::<VASliceParameterBufferH264>() as u32,
+                            1,
+                            &sp as *const _ as *const c_void,
+                            &mut sp_buf,
+                        ),
+                        "vaCreateBuffer(SliceParameter)",
+                    )?;
+                    created_buffers.push(sp_buf);
+
+                    let mut sd_buf: VABufferID = 0;
+                    check_va(
+                        (va.va_create_buffer)(
+                            self.display,
+                            self.context,
+                            VASliceDataBufferType,
+                            slice_nal.data.len() as u32,
+                            1,
+                            slice_nal.data.as_ptr() as *const c_void,
+                            &mut sd_buf,
+                        ),
+                        "vaCreateBuffer(SliceData)",
+                    )?;
+                    created_buffers.push(sd_buf);
+
+                    let mut slice_bufs = [sp_buf, sd_buf];
+                    check_va(
+                        (va.va_render_picture)(
+                            self.display,
+                            self.context,
+                            slice_bufs.as_mut_ptr(),
+                            2,
+                        ),
+                        "vaRenderPicture(slice)",
+                    )?;
+                }
+
+                check_va(
+                    (va.va_end_picture)(self.display, self.context),
+                    "vaEndPicture",
+                )?;
+                picture_started = false;
+                self.readback_surface(surface, timestamp_us, is_idr)
+            })();
+
+            if picture_started {
+                (va.va_end_picture)(self.display, self.context);
+            }
+            for buffer in created_buffers {
+                (va.va_destroy_buffer)(self.display, buffer);
+            }
+
+            let frame = match result {
+                Ok(frame) => frame,
+                Err(e) => {
+                    self.surface_in_use[surf_idx] = false;
+                    return Err(e);
+                }
+            };
+
+            if nal_ref_idc != 0 {
+                self.dpb.sliding_window_evict(&mut self.surface_in_use);
+                self.dpb
+                    .add_reference(surf_idx, first_sh.frame_num, top_poc, bottom_poc);
+            } else {
+                self.surface_in_use[surf_idx] = false;
+            }
+
+            self.current_surface_idx = surf_idx;
+            self.frame_counter = self.frame_counter.saturating_add(1);
+            Ok(Some(frame))
         }
     }
 
@@ -1506,45 +2227,93 @@ pub mod vaapi {
                 return Ok(None);
             }
 
-            // Create surfaces on first non-empty frame if not done yet.
-            // Default to 1920x1080; real implementation would parse SPS for resolution.
-            if !self.surfaces_created {
-                // SAFETY: (category 1) VA display was initialized successfully.
+            if self.codec == VideoCodec::H264 {
+                let mut slice_nals: Vec<&crate::NalUnit> = Vec::new();
+                let mut dimensions_changed = false;
+
+                for nal in &nals {
+                    if nal.data.is_empty() {
+                        continue;
+                    }
+                    match nal.data[0] & 0x1F {
+                        7 => {
+                            if let Ok(sps) = crate::h264_params::parse_sps(&nal.data[1..]) {
+                                let new_profile = Self::select_h264_profile(sps.profile_idc);
+                                if !self.surfaces_created && new_profile != self.h264_profile {
+                                    // SAFETY: VA display/config are valid, context not created yet.
+                                    unsafe {
+                                        self.recreate_config(new_profile)?;
+                                    }
+                                }
+                                if let Some(ref prev_sps) = self.sps
+                                    && (prev_sps.cropped_width() != sps.cropped_width()
+                                        || prev_sps.cropped_height() != sps.cropped_height())
+                                {
+                                    dimensions_changed = true;
+                                }
+                                self.sps = Some(sps);
+                            }
+                        }
+                        8 => {
+                            if let Ok(pps) = crate::h264_params::parse_pps(&nal.data[1..]) {
+                                self.pps = Some(pps);
+                            }
+                        }
+                        1 | 5 => slice_nals.push(nal),
+                        _ => {}
+                    }
+                }
+
+                if slice_nals.is_empty() {
+                    return Ok(None);
+                }
+
+                // SAFETY: VA handles are valid for context/surface lifecycle operations.
                 unsafe {
-                    self.create_surfaces(1920, 1080)?;
+                    if dimensions_changed && self.surfaces_created {
+                        self.destroy_surfaces_and_context();
+                        for idx in self.dpb.clear() {
+                            if idx < self.surface_in_use.len() {
+                                self.surface_in_use[idx] = false;
+                            }
+                        }
+                    }
+
+                    if !self.surfaces_created {
+                        let sps = self
+                            .sps
+                            .as_ref()
+                            .ok_or_else(|| VideoError::Codec("no SPS".into()))?;
+                        let w = sps.cropped_width() as u32;
+                        let h = sps.cropped_height() as u32;
+                        self.dpb.max_size = sps.max_num_ref_frames.min(16) as usize;
+                        self.create_surfaces(w, h)?;
+                    }
+
+                    return self.decode_picture(&slice_nals, timestamp_us);
                 }
             }
 
-            // Concatenate all non-parameter NALs as slice data
             let mut slice_data = Vec::new();
             for nal in &nals {
                 if nal.data.is_empty() {
                     continue;
                 }
-                let is_param = match self.codec {
-                    VideoCodec::H264 => matches!(nal.data[0] & 0x1F, 7 | 8),
-                    VideoCodec::H265 => matches!((nal.data[0] >> 1) & 0x3F, 32..=34),
-                    _ => false,
-                };
+                let is_param = matches!((nal.data[0] >> 1) & 0x3F, 32..=34);
                 if !is_param {
                     slice_data.extend_from_slice(&nal.data);
                 }
             }
-
             if slice_data.is_empty() {
                 return Ok(None);
             }
 
-            // Full VA-API pipeline: vaBeginPicture → vaCreateBuffer(SliceData) →
-            // vaRenderPicture → vaEndPicture → vaSyncSurface → vaDeriveImage →
-            // vaMapBuffer → NV12→RGB readback
-            // SAFETY: (category 1) surfaces/context created and status checked at each step.
+            // SAFETY: VA context lifecycle and decode calls are validated by status checks.
             unsafe {
-                let mut frame = self.decode_slice(&slice_data, 0)?;
-                if let Some(ref mut f) = frame {
-                    f.timestamp_us = timestamp_us;
+                if !self.surfaces_created {
+                    self.create_surfaces(1920, 1080)?;
                 }
-                Ok(frame)
+                self.decode_legacy_slice(&slice_data, self.current_surface_idx, timestamp_us)
             }
         }
 
@@ -1565,10 +2334,7 @@ pub mod vaapi {
                 unsafe {
                     if self.surfaces_created {
                         if self.context != 0 {
-                            (va.va_destroy_context)(
-                                self.display,
-                                self.context,
-                            );
+                            (va.va_destroy_context)(self.display, self.context);
                         }
                         if !self.surfaces.is_empty() {
                             (va.va_destroy_surfaces)(
@@ -2170,26 +2936,26 @@ pub mod media_foundation {
     // IID_IMFDXGIDeviceManager {eb533d5d-2db6-40f8-97a9-494692014f07}
     #[allow(dead_code)]
     const IID_IMFDXGIDeviceManager: GUID = [
-        0x5d, 0x3d, 0x53, 0xeb, 0xb6, 0x2d, 0xf8, 0x40, 0x97, 0xa9, 0x49, 0x46, 0x92, 0x01,
-        0x4f, 0x07,
+        0x5d, 0x3d, 0x53, 0xeb, 0xb6, 0x2d, 0xf8, 0x40, 0x97, 0xa9, 0x49, 0x46, 0x92, 0x01, 0x4f,
+        0x07,
     ];
 
     // IID_IMFDXGIBuffer {e7174cfa-1c9e-48b1-8866-626226bfc258}
     const IID_IMFDXGIBuffer: GUID = [
-        0xfa, 0x4c, 0x17, 0xe7, 0x9e, 0x1c, 0xb1, 0x48, 0x88, 0x66, 0x62, 0x62, 0x26, 0xbf,
-        0xc2, 0x58,
+        0xfa, 0x4c, 0x17, 0xe7, 0x9e, 0x1c, 0xb1, 0x48, 0x88, 0x66, 0x62, 0x62, 0x26, 0xbf, 0xc2,
+        0x58,
     ];
 
     // IID_ID3D11Texture2D {6f15aaf2-d208-4e89-9ab4-489535d34f9c}
     const IID_ID3D11Texture2D: GUID = [
-        0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3,
-        0x4f, 0x9c,
+        0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f,
+        0x9c,
     ];
 
     // IID_ID3D10Multithread {9B7E4E00-342C-4106-A19F-4F2704F689F0}
     const IID_ID3D10Multithread: GUID = [
-        0x00, 0x4e, 0x7e, 0x9b, 0x2c, 0x34, 0x06, 0x41, 0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6,
-        0x89, 0xf0,
+        0x00, 0x4e, 0x7e, 0x9b, 0x2c, 0x34, 0x06, 0x41, 0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6, 0x89,
+        0xf0,
     ];
 
     // ── Extern function bindings ──────────────────────────────────────
@@ -2256,14 +3022,14 @@ pub mod media_foundation {
 
     // {62CE7E72-4C71-4D20-B15D-452831A87D9D}
     const CLSID_CMSH264DecoderMFT: GUID = [
-        0x72, 0x7e, 0xce, 0x62, 0x71, 0x4c, 0x20, 0x4d,
-        0xb1, 0x5d, 0x45, 0x28, 0x31, 0xa8, 0x7d, 0x9d,
+        0x72, 0x7e, 0xce, 0x62, 0x71, 0x4c, 0x20, 0x4d, 0xb1, 0x5d, 0x45, 0x28, 0x31, 0xa8, 0x7d,
+        0x9d,
     ];
 
     // {420A51A3-D605-430C-B4FC-45274FA6C562}
     const CLSID_CMSHEVCDecoderMFT: GUID = [
-        0xa3, 0x51, 0x0a, 0x42, 0x05, 0xd6, 0x0c, 0x43,
-        0xb4, 0xfc, 0x45, 0x27, 0x4f, 0xa6, 0xc5, 0x62,
+        0xa3, 0x51, 0x0a, 0x42, 0x05, 0xd6, 0x0c, 0x43, 0xb4, 0xfc, 0x45, 0x27, 0x4f, 0xa6, 0xc5,
+        0x62,
     ];
 
     // ── Structs ───────────────────────────────────────────────────────
@@ -2386,12 +3152,8 @@ pub mod media_foundation {
         out: *mut *mut c_void,
     ) -> HRESULT {
         let vtable = *(transform as *const *const *const c_void);
-        let method: unsafe extern "system" fn(
-            *mut c_void,
-            u32,
-            u32,
-            *mut *mut c_void,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(13));
+        let method: unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(13));
         method(transform, stream_id, type_idx, out)
     }
 
@@ -2403,12 +3165,8 @@ pub mod media_foundation {
         out: *mut *mut c_void,
     ) -> HRESULT {
         let vtable = *(transform as *const *const *const c_void);
-        let method: unsafe extern "system" fn(
-            *mut c_void,
-            u32,
-            u32,
-            *mut *mut c_void,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(14));
+        let method: unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(14));
         method(transform, stream_id, type_idx, out)
     }
 
@@ -2445,11 +3203,8 @@ pub mod media_foundation {
         out: *mut *mut c_void,
     ) -> HRESULT {
         let vtable = *(transform as *const *const *const c_void);
-        let method: unsafe extern "system" fn(
-            *mut c_void,
-            u32,
-            *mut *mut c_void,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(18));
+        let method: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(18));
         method(transform, stream_id, out)
     }
 
@@ -2510,11 +3265,7 @@ pub mod media_foundation {
     }
 
     /// IMFAttributes::GetGUID (vtable 10)
-    unsafe fn attributes_get_guid(
-        attrs: *mut c_void,
-        key: *const GUID,
-        out: *mut GUID,
-    ) -> HRESULT {
+    unsafe fn attributes_get_guid(attrs: *mut c_void, key: *const GUID, out: *mut GUID) -> HRESULT {
         let vtable = *(attrs as *const *const *const c_void);
         let method: unsafe extern "system" fn(*mut c_void, *const GUID, *mut GUID) -> HRESULT =
             std::mem::transmute(*vtable.add(10));
@@ -2539,11 +3290,7 @@ pub mod media_foundation {
     }
 
     /// IMFAttributes::SetUINT32 (vtable 21)
-    unsafe fn attributes_set_uint32(
-        attrs: *mut c_void,
-        key: *const GUID,
-        value: u32,
-    ) -> HRESULT {
+    unsafe fn attributes_set_uint32(attrs: *mut c_void, key: *const GUID, value: u32) -> HRESULT {
         let vtable = *(attrs as *const *const *const c_void);
         let method: unsafe extern "system" fn(*mut c_void, *const GUID, u32) -> HRESULT =
             std::mem::transmute(*vtable.add(21));
@@ -2557,18 +3304,15 @@ pub mod media_foundation {
         value: *const GUID,
     ) -> HRESULT {
         let vtable = *(attrs as *const *const *const c_void);
-        let method: unsafe extern "system" fn(
-            *mut c_void,
-            *const GUID,
-            *const GUID,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(24));
+        let method: unsafe extern "system" fn(*mut c_void, *const GUID, *const GUID) -> HRESULT =
+            std::mem::transmute(*vtable.add(24));
         method(attrs, key, value)
     }
 
     // IID for IMF2DBuffer {7DC9D5F9-9ED9-44ec-9BBF-0600BB589FBB}
     const IID_IMF2DBuffer: GUID = [
-        0xf9, 0xd5, 0xc9, 0x7d, 0x9d, 0x9e, 0xec, 0x44, 0x9b, 0xbf, 0x06, 0x00, 0xbb, 0x58,
-        0x9f, 0xbb,
+        0xf9, 0xd5, 0xc9, 0x7d, 0x9d, 0x9e, 0xec, 0x44, 0x9b, 0xbf, 0x06, 0x00, 0xbb, 0x58, 0x9f,
+        0xbb,
     ];
 
     /// IUnknown::QueryInterface (vtable 0)
@@ -2593,11 +3337,8 @@ pub mod media_foundation {
         pitch: *mut i32,
     ) -> HRESULT {
         let vtable = *(buf2d as *const *const *const c_void);
-        let method: unsafe extern "system" fn(
-            *mut c_void,
-            *mut *mut u8,
-            *mut i32,
-        ) -> HRESULT = std::mem::transmute(*vtable.add(3));
+        let method: unsafe extern "system" fn(*mut c_void, *mut *mut u8, *mut i32) -> HRESULT =
+            std::mem::transmute(*vtable.add(3));
         method(buf2d, scanline0, pitch)
     }
 
@@ -2711,10 +3452,7 @@ pub mod media_foundation {
     }
 
     /// IMFDXGIBuffer::GetSubresourceIndex (vtable 4)
-    unsafe fn dxgi_buffer_get_subresource_index(
-        buffer: *mut c_void,
-        out: *mut u32,
-    ) -> HRESULT {
+    unsafe fn dxgi_buffer_get_subresource_index(buffer: *mut c_void, out: *mut u32) -> HRESULT {
         let vtable = *(buffer as *const *const *const c_void);
         let method: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT =
             std::mem::transmute(*vtable.add(4));
@@ -2760,11 +3498,7 @@ pub mod media_foundation {
     }
 
     /// ID3D11DeviceContext::Unmap (vtable 15)
-    unsafe fn d3d11_context_unmap(
-        context: *mut c_void,
-        resource: *mut c_void,
-        subresource: u32,
-    ) {
+    unsafe fn d3d11_context_unmap(context: *mut c_void, resource: *mut c_void, subresource: u32) {
         let vtable = *(context as *const *const *const c_void);
         let method: unsafe extern "system" fn(*mut c_void, *mut c_void, u32) =
             std::mem::transmute(*vtable.add(15));
@@ -2874,8 +3608,7 @@ pub mod media_foundation {
             };
 
             // DXVA: create D3D11 device + DXGI device manager
-            let (d3d11_device, d3d11_context, dxgi_manager, reset_token) =
-                Self::try_init_dxva();
+            let (d3d11_device, d3d11_context, dxgi_manager, reset_token) = Self::try_init_dxva();
 
             let mut transform: *mut c_void = ptr::null_mut();
             let hr = CoCreateInstance(
@@ -2904,7 +3637,9 @@ pub mod media_foundation {
                     eprintln!("[MF] DXVA: SET_D3D_MANAGER OK");
                     true
                 } else {
-                    eprintln!("[MF] DXVA: SET_D3D_MANAGER failed: hr={hr:#X}, falling back to software");
+                    eprintln!(
+                        "[MF] DXVA: SET_D3D_MANAGER failed: hr={hr:#X}, falling back to software"
+                    );
                     Self::cleanup_dxva(d3d11_device, d3d11_context, dxgi_manager);
                     false
                 }
@@ -2957,8 +3692,7 @@ pub mod media_foundation {
             let mut nv12_type: *mut c_void = ptr::null_mut();
             for idx in 0..64u32 {
                 let mut candidate: *mut c_void = ptr::null_mut();
-                let hr =
-                    transform_get_output_available_type(transform, 0, idx, &mut candidate);
+                let hr = transform_get_output_available_type(transform, 0, idx, &mut candidate);
                 if hr != S_OK || candidate.is_null() {
                     break;
                 }
@@ -3040,9 +3774,21 @@ pub mod media_foundation {
                 cached_buffer: ptr::null_mut(),
                 sw_fallback: None,
                 dxva_enabled,
-                d3d11_device: if dxva_enabled { d3d11_device } else { ptr::null_mut() },
-                d3d11_context: if dxva_enabled { d3d11_context } else { ptr::null_mut() },
-                dxgi_manager: if dxva_enabled { dxgi_manager } else { ptr::null_mut() },
+                d3d11_device: if dxva_enabled {
+                    d3d11_device
+                } else {
+                    ptr::null_mut()
+                },
+                d3d11_context: if dxva_enabled {
+                    d3d11_context
+                } else {
+                    ptr::null_mut()
+                },
+                dxgi_manager: if dxva_enabled {
+                    dxgi_manager
+                } else {
+                    ptr::null_mut()
+                },
                 _reset_token: if dxva_enabled { reset_token } else { 0 },
                 staging_texture: ptr::null_mut(),
                 staging_width: 0,
@@ -3074,16 +3820,19 @@ pub mod media_foundation {
             );
             if hr != S_OK || device.is_null() || context.is_null() {
                 eprintln!("[MF] DXVA: D3D11CreateDevice failed: hr={hr:#X}");
-                if !device.is_null() { com_release(device); }
-                if !context.is_null() { com_release(context); }
+                if !device.is_null() {
+                    com_release(device);
+                }
+                if !context.is_null() {
+                    com_release(context);
+                }
                 return null;
             }
             eprintln!("[MF] DXVA: D3D11 device created");
 
             // Enable multithread protection (MF uses worker threads on this device)
             let mut mt: *mut c_void = ptr::null_mut();
-            if com_query_interface(device, &IID_ID3D10Multithread, &mut mt) == S_OK
-                && !mt.is_null()
+            if com_query_interface(device, &IID_ID3D10Multithread, &mut mt) == S_OK && !mt.is_null()
             {
                 d3d10_multithread_set_protected(mt, 1);
                 com_release(mt);
@@ -3112,14 +3861,16 @@ pub mod media_foundation {
             (device, context, manager, reset_token)
         }
 
-        unsafe fn cleanup_dxva(
-            device: *mut c_void,
-            context: *mut c_void,
-            manager: *mut c_void,
-        ) {
-            if !manager.is_null() { com_release(manager); }
-            if !context.is_null() { com_release(context); }
-            if !device.is_null() { com_release(device); }
+        unsafe fn cleanup_dxva(device: *mut c_void, context: *mut c_void, manager: *mut c_void) {
+            if !manager.is_null() {
+                com_release(manager);
+            }
+            if !context.is_null() {
+                com_release(context);
+            }
+            if !device.is_null() {
+                com_release(device);
+            }
         }
 
         fn with_sw_fallback(codec: VideoCodec) -> Self {
@@ -3214,7 +3965,10 @@ pub mod media_foundation {
             }
             com_release(sample);
             if hr != S_OK {
-                eprintln!("[MF] ProcessInput failed: hr={hr:#X} data_len={}", data.len());
+                eprintln!(
+                    "[MF] ProcessInput failed: hr={hr:#X} data_len={}",
+                    data.len()
+                );
                 return Err(VideoError::Codec(format!(
                     "MF: ProcessInput failed: {hr:#X}"
                 )));
@@ -3226,7 +3980,8 @@ pub mod media_foundation {
         unsafe fn renegotiate_output(&mut self) {
             for idx in 0..64u32 {
                 let mut candidate: *mut c_void = ptr::null_mut();
-                let hr = transform_get_output_available_type(self.transform, 0, idx, &mut candidate);
+                let hr =
+                    transform_get_output_available_type(self.transform, 0, idx, &mut candidate);
                 if hr != S_OK || candidate.is_null() {
                     break;
                 }
@@ -3243,9 +3998,7 @@ pub mod media_foundation {
                             self.width = (frame_size >> 32) as u32;
                             self.height = frame_size as u32;
                         }
-                        eprintln!(
-                            "[MF] Re-negotiated output: {}x{}", self.width, self.height
-                        );
+                        eprintln!("[MF] Re-negotiated output: {}x{}", self.width, self.height);
                     }
                     com_release(candidate);
                     return;
@@ -3296,13 +4049,8 @@ pub mod media_foundation {
             };
 
             let mut proc_status: u32 = 0;
-            let hr = transform_process_output(
-                self.transform,
-                0,
-                1,
-                &mut output_buf,
-                &mut proc_status,
-            );
+            let hr =
+                transform_process_output(self.transform, 0, 1, &mut output_buf, &mut proc_status);
 
             if !output_buf.events.is_null() {
                 com_release(output_buf.events);
@@ -3446,12 +4194,8 @@ pub mod media_foundation {
                     misc_flags: 0,
                 };
                 let mut staging: *mut c_void = ptr::null_mut();
-                let hr = d3d11_create_texture_2d(
-                    self.d3d11_device,
-                    &desc,
-                    ptr::null(),
-                    &mut staging,
-                );
+                let hr =
+                    d3d11_create_texture_2d(self.d3d11_device, &desc, ptr::null(), &mut staging);
                 if hr != S_OK || staging.is_null() {
                     com_release(texture);
                     return Err(VideoError::Codec(format!(
@@ -3461,9 +4205,7 @@ pub mod media_foundation {
                 self.staging_texture = staging;
                 self.staging_width = coded_w;
                 self.staging_height = coded_h;
-                eprintln!(
-                    "[MF] DXVA staging texture: {coded_w}x{coded_h}"
-                );
+                eprintln!("[MF] DXVA staging texture: {coded_w}x{coded_h}");
             }
 
             d3d11_context_copy_subresource_region(
@@ -3574,12 +4316,11 @@ pub mod media_foundation {
                 let nv12_total = nv12_len as usize;
                 let coded_w = self.width;
                 let coded_h = self.height;
-                self.stride =
-                    if nv12_total == coded_w as usize * coded_h as usize * 3 / 2 {
-                        coded_w
-                    } else {
-                        (nv12_total * 2 / (coded_h as usize * 3)) as u32
-                    };
+                self.stride = if nv12_total == coded_w as usize * coded_h as usize * 3 / 2 {
+                    coded_w
+                } else {
+                    (nv12_total * 2 / (coded_h as usize * 3)) as u32
+                };
                 self.coded_height = coded_h;
                 eprintln!(
                     "[MF] Resolved: {}x{} stride={} nv12_len={nv12_len}",
@@ -3592,9 +4333,7 @@ pub mod media_foundation {
                 if contig_buf != self.cached_buffer {
                     com_release(contig_buf);
                 }
-                return Err(VideoError::Codec(
-                    "MF: cannot determine stride".into(),
-                ));
+                return Err(VideoError::Codec("MF: cannot determine stride".into()));
             }
 
             let w = self.width as usize;
@@ -3738,11 +4477,7 @@ pub mod media_foundation {
                                 0,
                             );
                         }
-                        transform_process_message(
-                            self.transform,
-                            MFT_MESSAGE_COMMAND_FLUSH,
-                            0,
-                        );
+                        transform_process_message(self.transform, MFT_MESSAGE_COMMAND_FLUSH, 0);
                         com_release(self.transform);
                     }
                     if !self.cached_buffer.is_null() {
@@ -3913,7 +4648,16 @@ unsafe fn nv12_to_rgb8_neon(
             let cr_lo = vget_low_s16(cr_adj);
             let c_lo = vmull_s16(c298, y_lo);
             let r_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c409, cr_lo)), half), 8);
-            let g_lo = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_lo, vmull_s16(c208, cr_lo)), vmull_s16(c100, cb_lo)), half), 8);
+            let g_lo = vshrq_n_s32(
+                vaddq_s32(
+                    vsubq_s32(
+                        vsubq_s32(c_lo, vmull_s16(c208, cr_lo)),
+                        vmull_s16(c100, cb_lo),
+                    ),
+                    half,
+                ),
+                8,
+            );
             let b_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c516, cb_lo)), half), 8);
 
             let y_hi = vget_high_s16(y_adj);
@@ -3921,7 +4665,16 @@ unsafe fn nv12_to_rgb8_neon(
             let cr_hi = vget_high_s16(cr_adj);
             let c_hi = vmull_s16(c298, y_hi);
             let r_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c409, cr_hi)), half), 8);
-            let g_hi = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_hi, vmull_s16(c208, cr_hi)), vmull_s16(c100, cb_hi)), half), 8);
+            let g_hi = vshrq_n_s32(
+                vaddq_s32(
+                    vsubq_s32(
+                        vsubq_s32(c_hi, vmull_s16(c208, cr_hi)),
+                        vmull_s16(c100, cb_hi),
+                    ),
+                    half,
+                ),
+                8,
+            );
             let b_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c516, cb_hi)), half), 8);
 
             let r16 = vcombine_s16(vmovn_s32(r_lo), vmovn_s32(r_hi));
