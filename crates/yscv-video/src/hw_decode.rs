@@ -4543,12 +4543,6 @@ pub fn is_hevc_available() -> bool {
     {
         return true;
     }
-    #[cfg(all(target_os = "linux", feature = "vaapi"))]
-    {
-        return HwVideoDecoder::new(crate::VideoCodec::H265)
-            .map(|d| d.is_hardware())
-            .unwrap_or(false);
-    }
     #[allow(unreachable_code)]
     false
 }
