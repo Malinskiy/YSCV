@@ -4543,11 +4543,16 @@ pub fn is_hevc_available() -> bool {
     {
         return true;
     }
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    {
+        return HwVideoDecoder::new(crate::VideoCodec::H265)
+            .map(|d| d.is_hardware())
+            .unwrap_or(false);
+    }
+    #[allow(unreachable_code)]
     false
 }
 
-/// Check whether the host can hardware-decode H.264 via a platform API
-/// (VideoToolbox, Media Foundation, etc. — excludes VA-API which is incomplete).
 #[allow(unreachable_code)]
 pub fn is_h264_hw_available() -> bool {
     #[cfg(all(target_os = "windows", feature = "media-foundation"))]
@@ -4557,6 +4562,12 @@ pub fn is_h264_hw_available() -> bool {
     #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
     {
         return true;
+    }
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    {
+        return HwVideoDecoder::new(crate::VideoCodec::H264)
+            .map(|d| d.is_hardware())
+            .unwrap_or(false);
     }
     false
 }
